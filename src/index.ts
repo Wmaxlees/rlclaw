@@ -301,7 +301,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     // Extract tool calls from session transcript
     const sessionId = sessions[group.folder];
     const toolCalls = sessionId
-      ? extractToolCallsForRun(group.folder, sessionId, runStartTime, runEndTime)
+      ? extractToolCallsForRun(
+          group.folder,
+          sessionId,
+          runStartTime,
+          runEndTime,
+        )
       : [];
 
     recordSkillTaskRun({
@@ -724,7 +729,10 @@ async function main(): Promise<void> {
       try {
         handleReactionFeedback(messageId, chatJid, emoji);
       } catch (err) {
-        logger.warn({ err, chatJid, emoji }, 'Failed to process reaction feedback');
+        logger.warn(
+          { err, chatJid, emoji },
+          'Failed to process reaction feedback',
+        );
       }
     },
   };

@@ -39,7 +39,11 @@ export function getOrCreateRollout(
         turn_count: existing.turn_count + 1,
         last_activity_at: now,
       });
-      return { ...existing, turn_count: existing.turn_count + 1, last_activity_at: now };
+      return {
+        ...existing,
+        turn_count: existing.turn_count + 1,
+        last_activity_at: now,
+      };
     }
   }
 

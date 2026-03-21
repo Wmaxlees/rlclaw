@@ -1041,7 +1041,9 @@ export function getOpenRollout(chatJid: string): Rollout | undefined {
 
 export function updateRollout(
   id: string,
-  updates: Partial<Pick<Rollout, 'status' | 'turn_count' | 'closed_at' | 'last_activity_at'>>,
+  updates: Partial<
+    Pick<Rollout, 'status' | 'turn_count' | 'closed_at' | 'last_activity_at'>
+  >,
 ): void {
   const fields = Object.keys(updates)
     .map((k) => `${k} = ?`)

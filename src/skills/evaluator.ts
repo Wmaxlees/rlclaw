@@ -65,7 +65,9 @@ function buildRolloutMessage(
 
     sections.push(`## Turn ${i + 1} of ${runs.length}`);
     sections.push(`**User:** ${run.prompt_summary ?? '(no prompt recorded)'}`);
-    sections.push(`**Assistant:** ${run.response_summary ?? '(no response recorded)'}`);
+    sections.push(
+      `**Assistant:** ${run.response_summary ?? '(no response recorded)'}`,
+    );
 
     if (run.tool_calls) {
       try {
@@ -78,7 +80,9 @@ function buildRolloutMessage(
           sections.push('**Tools used:**');
           for (const t of tools) {
             const inputSummary = JSON.stringify(t.input).slice(0, 100);
-            sections.push(`- ${t.name}(${inputSummary}) → ${t.output.slice(0, 150)}`);
+            sections.push(
+              `- ${t.name}(${inputSummary}) → ${t.output.slice(0, 150)}`,
+            );
           }
         }
       } catch {
@@ -96,7 +100,9 @@ function buildRolloutMessage(
   const availableNames = allSkills.map((s) => s.name);
   sections.push('## Available Skills');
   sections.push(
-    availableNames.length > 0 ? availableNames.join(', ') : '(none — cold start)',
+    availableNames.length > 0
+      ? availableNames.join(', ')
+      : '(none — cold start)',
   );
 
   return sections.join('\n');
@@ -144,11 +150,18 @@ async function processEvaluations(): Promise<void> {
   const rollouts = getClosedRolloutsNeedingEvaluation();
   if (rollouts.length === 0) return;
 
-  logger.info({ count: rollouts.length }, 'Processing pending rollout evaluations');
+  logger.info(
+    { count: rollouts.length },
+    'Processing pending rollout evaluations',
+  );
 
   for (const rollout of rollouts) {
     try {
-      const result = await evaluateRollout(client, rollout.id, rollout.group_folder);
+      const result = await evaluateRollout(
+        client,
+        rollout.id,
+        rollout.group_folder,
+      );
       if (!result) continue;
 
       const runs = getRunsForRollout(rollout.id);
@@ -165,7 +178,9 @@ async function processEvaluations(): Promise<void> {
           dimensions: JSON.stringify(result.dimensions),
           evaluation_source: 'evaluator_agent',
           evaluator_reasoning: result.reasoning,
-          raw_feedback: JSON.stringify({ skill_assessment: result.skill_assessment }),
+          raw_feedback: JSON.stringify({
+            skill_assessment: result.skill_assessment,
+          }),
           evaluated_at: now,
         });
 

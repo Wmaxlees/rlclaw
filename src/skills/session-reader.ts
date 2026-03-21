@@ -43,7 +43,11 @@ function findSessionFile(
   // Search all project subdirectories for the session file
   try {
     for (const projectSlug of fs.readdirSync(projectsDir)) {
-      const candidate = path.join(projectsDir, projectSlug, `${sessionId}.jsonl`);
+      const candidate = path.join(
+        projectsDir,
+        projectSlug,
+        `${sessionId}.jsonl`,
+      );
       if (fs.existsSync(candidate)) return candidate;
     }
   } catch (err) {
@@ -65,7 +69,10 @@ export function extractToolCallsForRun(
 ): ToolCall[] {
   const sessionFile = findSessionFile(groupFolder, sessionId);
   if (!sessionFile) {
-    logger.debug({ groupFolder, sessionId }, 'Session file not found for tool call extraction');
+    logger.debug(
+      { groupFolder, sessionId },
+      'Session file not found for tool call extraction',
+    );
     return [];
   }
 

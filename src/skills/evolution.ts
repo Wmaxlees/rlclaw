@@ -224,7 +224,9 @@ function buildEvolutionContext(): string {
     );
     const notUsed = availableNames.filter((n) => !usedInRollout.has(n));
     if (notUsed.length > 0) {
-      sections.push(`Skills available but never used in rollout: ${notUsed.join(', ')}`);
+      sections.push(
+        `Skills available but never used in rollout: ${notUsed.join(', ')}`,
+      );
     }
     sections.push('');
   }

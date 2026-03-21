@@ -247,6 +247,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let outputSentToUser = false;
   const runStartTime = Date.now();
   let firstOutputSeen = false;
+  const responseChunks: string[] = [];
 
   const output = await runAgent(group, prompt, chatJid, async (result) => {
     // Streaming output callback — called for each agent result
@@ -267,6 +268,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       if (text) {
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
+        responseChunks.push(text);
       }
       // Only reset idle timer on actual results, not session-update markers (result: null)
       resetIdleTimer();
@@ -295,7 +297,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       group_folder: group.folder,
       chat_jid: chatJid,
       prompt_summary: prompt.slice(0, 500),
-      response_summary: null, // Streamed output, not easily captured
+      response_summary: responseChunks.join(' ').slice(0, 1000) || null,
       duration_ms: runDuration,
       status: runStatus,
       created_at: new Date().toISOString(),

@@ -45,8 +45,4 @@ When scoring, ask: did the worker demonstrate genuine technical judgment — or 
 
 ## skill_assessment
 
-Focus on hard skill gaps — specific technical approaches, reasoning strategies, or domain knowledge patterns that were missing or applied incorrectly. For example:
-- "Worker failed to check for existing implementations before writing from scratch — needs a 'search before build' pattern"
-- "Worker identified the symptom (test failure) but not the root cause (schema mismatch) — needs structured root-cause analysis skill"
-- "Excellent decomposition into parallel independent subtasks — this pattern should be reinforced as a skill"
-- "Worker made redundant searches for the same concept — needs a 'track what you've already looked up' skill"
+Describe what you actually observed: what technical approaches were used or missing, where reasoning broke down, what the worker did well that should be reinforced. Be specific and observational — describe the failure or success pattern you saw in this execution. The evolution agent will decide what skills to create or modify based on your observations.

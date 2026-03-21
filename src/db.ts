@@ -144,6 +144,7 @@ function createSchema(database: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_skill_runs_deadline ON skill_task_runs(evaluation_deadline);
     CREATE INDEX IF NOT EXISTS idx_skill_runs_rollout ON skill_task_runs(rollout_id);
+    CREATE INDEX IF NOT EXISTS idx_skill_runs_created ON skill_task_runs(created_at);
 
     CREATE TABLE IF NOT EXISTS skill_run_selections (
       run_id TEXT NOT NULL,
@@ -236,8 +237,11 @@ function createSchema(database: Database.Database): void {
     database.exec(
       `ALTER TABLE scheduled_tasks ADD COLUMN context_mode TEXT DEFAULT 'isolated'`,
     );
-  } catch {
-    /* column already exists */
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes('already exists') && !msg.includes('duplicate column')) {
+      logger.warn({ err }, 'Migration warning: context_mode column');
+    }
   }
 
   // Add is_bot_message column if it doesn't exist (migration for existing DBs)
@@ -249,8 +253,11 @@ function createSchema(database: Database.Database): void {
     database
       .prepare(`UPDATE messages SET is_bot_message = 1 WHERE content LIKE ?`)
       .run(`${ASSISTANT_NAME}:%`);
-  } catch {
-    /* column already exists */
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes('already exists') && !msg.includes('duplicate column')) {
+      logger.warn({ err }, 'Migration warning: is_bot_message column');
+    }
   }
 
   // Add channel and is_group columns if they don't exist (migration for existing DBs)
@@ -270,8 +277,11 @@ function createSchema(database: Database.Database): void {
     database.exec(
       `UPDATE chats SET channel = 'telegram', is_group = 1 WHERE jid LIKE 'tg:%'`,
     );
-  } catch {
-    /* columns already exist */
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes('already exists') && !msg.includes('duplicate column')) {
+      logger.warn({ err }, 'Migration warning: channel/is_group columns');
+    }
   }
 
   // Rollout columns migration
@@ -279,20 +289,29 @@ function createSchema(database: Database.Database): void {
     database.exec(
       `ALTER TABLE skill_task_runs ADD COLUMN rollout_id TEXT REFERENCES rollouts(id)`,
     );
-  } catch {
-    /* column already exists */
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes('already exists') && !msg.includes('duplicate column')) {
+      logger.warn({ err }, 'Migration warning: rollout_id column');
+    }
   }
   try {
     database.exec(`ALTER TABLE skill_task_runs ADD COLUMN tool_calls TEXT`);
-  } catch {
-    /* column already exists */
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes('already exists') && !msg.includes('duplicate column')) {
+      logger.warn({ err }, 'Migration warning: tool_calls column');
+    }
   }
   try {
     database.exec(
       `ALTER TABLE skill_evaluations ADD COLUMN evaluator_reasoning TEXT`,
     );
-  } catch {
-    /* column already exists */
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes('already exists') && !msg.includes('duplicate column')) {
+      logger.warn({ err }, 'Migration warning: evaluator_reasoning column');
+    }
   }
 }
 
@@ -302,6 +321,7 @@ export function initDatabase(): void {
 
   db = new Database(dbPath);
   createSchema(db);
+  db.pragma('foreign_keys = ON');
 
   // Migrate from JSON files if they exist
   migrateJsonState();
@@ -334,7 +354,7 @@ export function storeChatMetadata(
       INSERT INTO chats (jid, name, last_message_time, channel, is_group) VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(jid) DO UPDATE SET
         name = excluded.name,
-        last_message_time = MAX(last_message_time, excluded.last_message_time),
+        last_message_time = CASE WHEN last_message_time > excluded.last_message_time THEN last_message_time ELSE excluded.last_message_time END,
         channel = COALESCE(excluded.channel, channel),
         is_group = COALESCE(excluded.is_group, is_group)
     `,
@@ -345,7 +365,7 @@ export function storeChatMetadata(
       `
       INSERT INTO chats (jid, name, last_message_time, channel, is_group) VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(jid) DO UPDATE SET
-        last_message_time = MAX(last_message_time, excluded.last_message_time),
+        last_message_time = CASE WHEN last_message_time > excluded.last_message_time THEN last_message_time ELSE excluded.last_message_time END,
         channel = COALESCE(excluded.channel, channel),
         is_group = COALESCE(excluded.is_group, is_group)
     `,
@@ -860,9 +880,15 @@ export function getRegisteredGroup(
     folder: row.folder,
     trigger: row.trigger_pattern,
     added_at: row.added_at,
-    containerConfig: row.container_config
-      ? JSON.parse(row.container_config)
-      : undefined,
+    containerConfig: (() => {
+      if (!row.container_config) return undefined;
+      try {
+        return JSON.parse(row.container_config);
+      } catch (err) {
+        logger.error({ jid: row.jid, err }, 'Failed to parse container_config');
+        return undefined;
+      }
+    })(),
     requiresTrigger:
       row.requires_trigger === null ? undefined : row.requires_trigger === 1,
   };
@@ -910,9 +936,18 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
       folder: row.folder,
       trigger: row.trigger_pattern,
       added_at: row.added_at,
-      containerConfig: row.container_config
-        ? JSON.parse(row.container_config)
-        : undefined,
+      containerConfig: (() => {
+        if (!row.container_config) return undefined;
+        try {
+          return JSON.parse(row.container_config);
+        } catch (err) {
+          logger.error(
+            { jid: row.jid, err },
+            'Failed to parse container_config',
+          );
+          return undefined;
+        }
+      })(),
       requiresTrigger:
         row.requires_trigger === null ? undefined : row.requires_trigger === 1,
     };
@@ -1078,6 +1113,17 @@ export function updateRollout(
     Pick<Rollout, 'status' | 'turn_count' | 'closed_at' | 'last_activity_at'>
   >,
 ): void {
+  const ALLOWED_ROLLOUT_FIELDS = new Set([
+    'status',
+    'turn_count',
+    'closed_at',
+    'last_activity_at',
+  ]);
+  for (const key of Object.keys(updates)) {
+    if (!ALLOWED_ROLLOUT_FIELDS.has(key)) {
+      throw new Error(`updateRollout: disallowed field "${key}"`);
+    }
+  }
   const fields = Object.keys(updates)
     .map((k) => `${k} = ?`)
     .join(', ');
@@ -1303,13 +1349,21 @@ export function getLastEvolutionTimestamp(): string | null {
   return row?.created_at ?? null;
 }
 
+/**
+ * Run a set of DB operations in a single better-sqlite3 transaction.
+ * Usage: runDbTransaction(() => { insertSkill(…); updateSkillStatus(…); … });
+ */
+export function runDbTransaction(fn: () => void): void {
+  db.transaction(fn)();
+}
+
 export function getSkillVersionCount(
   name: string,
   groupFolder: string | null,
 ): number {
   const row = db
     .prepare(
-      'SELECT COUNT(*) as cnt FROM behavioral_skills WHERE name = ? AND (group_folder IS NULL AND ? IS NULL OR group_folder = ?)',
+      'SELECT COUNT(*) as cnt FROM behavioral_skills WHERE name = ? AND ((group_folder IS NULL AND ? IS NULL) OR (group_folder = ?))',
     )
     .get(name, groupFolder, groupFolder) as { cnt: number };
   return row.cnt;
@@ -1373,6 +1427,19 @@ export function updateWorkerTask(
     >
   >,
 ): void {
+  const ALLOWED_WORKER_TASK_FIELDS = new Set([
+    'status',
+    'assigned_worker',
+    'result',
+    'error',
+    'started_at',
+    'completed_at',
+  ]);
+  for (const key of Object.keys(updates)) {
+    if (!ALLOWED_WORKER_TASK_FIELDS.has(key)) {
+      throw new Error(`updateWorkerTask: disallowed field "${key}"`);
+    }
+  }
   const fields = Object.keys(updates)
     .map((k) => `${k} = ?`)
     .join(', ');
@@ -1387,8 +1454,27 @@ export function getChildTasks(parentId: string): WorkerTask[] {
 }
 
 export function getRootTaskId(taskId: string): string {
+  const visited = new Set<string>();
   let current = getWorkerTask(taskId);
+  let iterations = 0;
+  const MAX_ITERATIONS = 100;
   while (current?.parent_task_id) {
+    if (visited.has(current.id)) {
+      logger.warn(
+        { taskId, cycleAt: current.id },
+        'Cycle detected in worker task parent chain',
+      );
+      return current.id;
+    }
+    visited.add(current.id);
+    iterations++;
+    if (iterations >= MAX_ITERATIONS) {
+      logger.warn(
+        { taskId, iterations },
+        'Max iterations reached in getRootTaskId',
+      );
+      return current.id;
+    }
     current = getWorkerTask(current.parent_task_id);
   }
   return current?.id ?? taskId;

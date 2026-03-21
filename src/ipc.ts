@@ -15,6 +15,7 @@ import {
   deleteTask,
   getActiveSkills,
   getTaskById,
+  getWorkerTask,
   insertWallEntry,
   insertWorkerTask,
   getRootTaskId,
@@ -325,7 +326,6 @@ export async function processTaskIpc(
     // For create_worker_task
     description?: string;
     parentTaskId?: string;
-    parentDepth?: number;
     // For post_wall
     content?: string;
     author?: string;
@@ -612,11 +612,23 @@ export async function processTaskIpc(
       break;
 
     case 'create_worker_task':
-      if (data.description && data.chatJid) {
+      if (data.description) {
+        // chatJid can be omitted — fall back to looking up the group's registered JID
+        const resolvedJid =
+          data.chatJid ??
+          Object.entries(registeredGroups).find(
+            ([, g]) => g.folder === sourceGroup,
+          )?.[0];
+        if (!resolvedJid) {
+          logger.warn(
+            { sourceGroup },
+            'create_worker_task: cannot resolve chatJid for group',
+          );
+          break;
+        }
         const parentId = data.parentTaskId as string | undefined;
-        const depth = parentId
-          ? ((data.parentDepth as number | undefined) ?? 0) + 1
-          : 0;
+        const parentTask = parentId ? getWorkerTask(parentId) : null;
+        const depth = parentTask ? parentTask.depth + 1 : 0;
         if (depth > WORKER_MAX_DEPTH) {
           logger.warn(
             { sourceGroup, depth, parentId },
@@ -628,7 +640,7 @@ export async function processTaskIpc(
         const task: WorkerTask = {
           id: taskId,
           group_folder: sourceGroup,
-          chat_jid: data.chatJid,
+          chat_jid: resolvedJid,
           parent_task_id: parentId ?? null,
           depth,
           description: data.description,
@@ -651,6 +663,14 @@ export async function processTaskIpc(
 
     case 'post_wall': {
       if (data.content && data.taskId) {
+        const task = getWorkerTask(data.taskId as string);
+        if (!task || task.group_folder !== sourceGroup) {
+          logger.warn(
+            { sourceGroup, taskId: data.taskId },
+            'Wall post rejected: task not owned by group',
+          );
+          break;
+        }
         const rootId = getRootTaskId(data.taskId as string);
         const entry: WallEntry = {
           id: `wall-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,

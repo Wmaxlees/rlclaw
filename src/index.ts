@@ -870,39 +870,55 @@ async function main(): Promise<void> {
       groupFolder: string,
       chatJid: string,
     ) => {
-      const group = registeredGroups[chatJid];
-      const channel = findChannel(channels, chatJid);
-      if (!group || !channel) {
-        logger.warn(
-          { chatJid, groupFolder },
-          'Root task complete but group/channel not found for synthesis',
-        );
-        return;
-      }
-      logger.info(
-        { taskId: task.id, chatJid },
-        'Root worker task complete, running synthesis',
-      );
-      const synthesisPrompt = [
-        '[TASK COMPLETE]',
-        `A delegated task has finished. Summarize the result for the user.`,
-        '',
-        `Task: ${task.description}`,
-        '',
-        `Result:\n${result}`,
-      ].join('\n');
-      await runAgent(group, synthesisPrompt, chatJid, async (out) => {
-        if (out.result) {
-          const raw =
-            typeof out.result === 'string'
-              ? out.result
-              : JSON.stringify(out.result);
-          const text = raw
-            .replace(/<internal>[\s\S]*?<\/internal>/g, '')
-            .trim();
-          if (text) await channel.sendMessage(chatJid, text);
+      try {
+        const group = registeredGroups[chatJid];
+        const channel = findChannel(channels, chatJid);
+        if (!group || !channel) {
+          logger.warn(
+            { chatJid, groupFolder },
+            'Root task complete but group/channel not found',
+          );
+          return;
         }
-      });
+        logger.info(
+          { taskId: task.id, chatJid },
+          'Root worker task complete, running synthesis',
+        );
+        const synthesisPrompt = [
+          '[TASK COMPLETE]',
+          `A delegated task has finished. Summarize the result for the user.`,
+          '',
+          `Task: ${task.description}`,
+          '',
+          `Result:\n${result}`,
+        ].join('\n');
+        await runAgent(group, synthesisPrompt, chatJid, async (out) => {
+          if (out.result) {
+            const raw =
+              typeof out.result === 'string'
+                ? out.result
+                : JSON.stringify(out.result);
+            const text = raw
+              .replace(/<internal>[\s\S]*?<\/internal>/g, '')
+              .trim();
+            if (text) {
+              try {
+                await channel.sendMessage(chatJid, text);
+              } catch (sendErr) {
+                logger.error(
+                  { chatJid, sendErr },
+                  'Failed to send synthesis result to user',
+                );
+              }
+            }
+          }
+        });
+      } catch (err) {
+        logger.error(
+          { taskId: task.id, chatJid, err },
+          'Worker task synthesis failed',
+        );
+      }
     },
   });
   startMessageLoop().catch((err) => {

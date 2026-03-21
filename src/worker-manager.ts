@@ -15,8 +15,12 @@ import {
   getRootTaskId,
   getWallEntries,
   getWorkerTask,
+  recordWorkerTaskRun,
   updateWorkerTask,
 } from './db.js';
+import {
+  createWorkerRollout,
+} from './skills/rollout-manager.js';
 import { resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup, WorkerTask } from './types.js';
@@ -100,6 +104,10 @@ async function runWorker(
 
   // Write wall snapshot to IPC input dir for the worker to read
   const rootId = getRootTaskId(task.id);
+
+  // Ensure worker rollout exists for this task tree
+  createWorkerRollout(rootId, task.chat_jid, task.group_folder);
+
   const wallEntries = getWallEntries(rootId);
   const ipcDir = resolveGroupIpcPath(group.folder);
   const workerInputDir = path.join(
@@ -180,6 +188,8 @@ async function runWorker(
       error: output.error ?? 'Container error',
       completed_at: new Date().toISOString(),
     });
+    const completedTask = getWorkerTask(task.id);
+    if (completedTask) recordWorkerTaskRun(completedTask);
   } else {
     const MAX_RESULT_BYTES = 500_000;
     let result = resultChunks.join('\n').trim() || '(no output)';
@@ -195,6 +205,8 @@ async function runWorker(
       result,
       completed_at: new Date().toISOString(),
     });
+    const completedTask = getWorkerTask(task.id);
+    if (completedTask) recordWorkerTaskRun(completedTask);
   }
 
   // Check if parent task is now complete

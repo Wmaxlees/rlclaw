@@ -12,19 +12,26 @@ import { EVALUATION_POLL_INTERVAL } from '../config.js';
 import {
   getActiveSkills,
   getClosedRolloutsNeedingEvaluation,
+  getClosedWorkerRolloutsNeedingEvaluation,
   getRunsForRollout,
   getSkillSelectionsForRun,
   recordEvaluation,
+  updateRootOutcomeScore,
   updateSkillPerformance,
 } from '../db.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
-import { closeStaleRollouts } from './rollout-manager.js';
+import { closeStaleRollouts, closeWorkerRollout } from './rollout-manager.js';
 
 let evaluatorRunning = false;
 
 const evaluatorPrompt = fs.readFileSync(
   path.join(process.cwd(), 'container', 'evaluator-prompt.md'),
+  'utf-8',
+);
+
+const workerEvaluatorPrompt = fs.readFileSync(
+  path.join(process.cwd(), 'container', 'worker-evaluator-prompt.md'),
   'utf-8',
 );
 
@@ -45,6 +52,19 @@ interface EvaluatorResponse {
     efficiency: number;
     tone: number;
     tool_selection: number;
+  };
+  reasoning: string;
+  skill_assessment: string;
+}
+
+interface WorkerEvaluatorResponse {
+  overall: number;
+  dimensions: {
+    task_completion: number;
+    accuracy: number;
+    efficiency: number;
+    decomposition_quality: number;
+    result_quality: number;
   };
   reasoning: string;
   skill_assessment: string;
@@ -109,6 +129,35 @@ function buildRolloutMessage(
       ? availableNames.join(', ')
       : '(none — cold start)',
   );
+
+  return sections.join('\n');
+}
+
+function buildWorkerRolloutMessage(
+  runs: ReturnType<typeof getRunsForRollout>,
+): string {
+  const sections: string[] = [];
+
+  for (let i = 0; i < runs.length; i++) {
+    const run = runs[i];
+    sections.push(`## Worker Task ${i + 1} of ${runs.length}`);
+    sections.push('**Task Description:**');
+    sections.push('```');
+    sections.push(run.prompt_summary ?? '(no description recorded)');
+    sections.push('```');
+    sections.push('');
+    sections.push(`**Status:** ${run.status}`);
+    sections.push('**Result:**');
+    sections.push('```');
+    sections.push(run.response_summary ?? '(no result recorded)');
+    sections.push('```');
+    if (run.root_outcome_score !== null && run.root_outcome_score !== undefined) {
+      sections.push(
+        `**Root Outcome Score:** ${(run.root_outcome_score as number).toFixed(2)} (synthesis quality)`,
+      );
+    }
+    sections.push('');
+  }
 
   return sections.join('\n');
 }
@@ -193,6 +242,155 @@ async function evaluateRollout(
   }
 }
 
+async function evaluateWorkerRolloutTree(
+  client: Anthropic,
+  rolloutId: string,
+  groupFolder: string,
+): Promise<WorkerEvaluatorResponse | null> {
+  const runs = getRunsForRollout(rolloutId);
+  if (runs.length === 0) return null;
+
+  const userMessage = buildWorkerRolloutMessage(runs);
+
+  try {
+    const response = await Promise.race([
+      client.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 600,
+        system: workerEvaluatorPrompt,
+        messages: [{ role: 'user', content: userMessage }],
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('evaluator_timeout')), 30000),
+      ),
+    ]);
+
+    if (
+      !response.content ||
+      response.content.length === 0 ||
+      response.content[0].type !== 'text'
+    ) {
+      logger.warn(
+        { rolloutId },
+        'Worker evaluator response missing or non-text content[0], skipping',
+      );
+      return null;
+    }
+
+    const text = response.content[0].text;
+    const cleaned = text
+      .replace(/^```json?\s*/m, '')
+      .replace(/```\s*$/m, '')
+      .trim();
+    const result = JSON.parse(cleaned) as WorkerEvaluatorResponse;
+
+    if (
+      typeof result.overall !== 'number' ||
+      result.overall < 0 ||
+      result.overall > 1 ||
+      typeof result.dimensions !== 'object' ||
+      result.dimensions === null ||
+      typeof result.reasoning !== 'string'
+    ) {
+      logger.error(
+        { rolloutId, rawResponse: cleaned.slice(0, 200) },
+        'Worker evaluator response failed schema validation',
+      );
+      return null;
+    }
+
+    return result;
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    if (
+      errMsg === 'evaluator_timeout' ||
+      (typeof (err as { status?: number }).status === 'number' &&
+        (err as { status: number }).status === 429)
+    ) {
+      logger.warn(
+        { err, rolloutId },
+        'Worker evaluator API call timed out or rate-limited, will retry',
+      );
+      return null;
+    }
+    logger.error({ err, rolloutId }, 'Worker evaluator API call failed');
+    return null;
+  }
+}
+
+/**
+ * Score a worker task tree synthesis and close its rollout.
+ * Called from index.ts after the synthesis message is sent to the user.
+ */
+export async function scoreAndCloseWorkerRollout(
+  rootTaskId: string,
+  taskDescription: string,
+  synthesisText: string,
+): Promise<void> {
+  const client = getAnthropicClient();
+  if (!client) return;
+
+  // Close rollout first so it's ready for evaluation
+  closeWorkerRollout(rootTaskId);
+
+  // Score the synthesis: simple prompt asking how good the output was
+  const scoringMessage = [
+    '## Task Description',
+    '```',
+    taskDescription.slice(0, 500),
+    '```',
+    '',
+    '## Synthesis Delivered to User',
+    '```',
+    synthesisText.slice(0, 1000),
+    '```',
+  ].join('\n');
+
+  const scoringSystem = `You are scoring the quality of a task synthesis message delivered to a user.
+Return ONLY a JSON object with a single field: {"overall": 0.0-1.0}
+- 0.9-1.0: Excellent — clear, complete, directly answers the task
+- 0.7-0.9: Good — useful but minor gaps
+- 0.5-0.7: Adequate — partially useful
+- 0.3-0.5: Poor — vague or incomplete
+- 0.0-0.3: Failed — does not address the task`;
+
+  try {
+    const response = await Promise.race([
+      client.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 100,
+        system: scoringSystem,
+        messages: [{ role: 'user', content: scoringMessage }],
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('synthesis_score_timeout')), 20000),
+      ),
+    ]);
+
+    if (
+      response.content &&
+      response.content.length > 0 &&
+      response.content[0].type === 'text'
+    ) {
+      const text = response.content[0].text;
+      const cleaned = text
+        .replace(/^```json?\s*/m, '')
+        .replace(/```\s*$/m, '')
+        .trim();
+      const parsed = JSON.parse(cleaned) as { overall: number };
+      if (typeof parsed.overall === 'number' && parsed.overall >= 0 && parsed.overall <= 1) {
+        updateRootOutcomeScore(rootTaskId, parsed.overall);
+        logger.info(
+          { rootTaskId, score: parsed.overall },
+          'Root outcome score recorded',
+        );
+      }
+    }
+  } catch (err) {
+    logger.warn({ rootTaskId, err }, 'Failed to score synthesis, skipping root outcome score');
+  }
+}
+
 async function processEvaluations(): Promise<void> {
   // Close any stale open rollouts first
   closeStaleRollouts();
@@ -254,6 +452,59 @@ async function processEvaluations(): Promise<void> {
       );
     } catch (err) {
       logger.error({ err, rolloutId: rollout.id }, 'Error evaluating rollout');
+    }
+  }
+
+  // Process worker rollouts
+  const workerRollouts = getClosedWorkerRolloutsNeedingEvaluation();
+  if (workerRollouts.length > 0) {
+    logger.info(
+      { count: workerRollouts.length },
+      'Processing pending worker rollout evaluations',
+    );
+  }
+
+  for (const rollout of workerRollouts) {
+    try {
+      const result = await evaluateWorkerRolloutTree(
+        client,
+        rollout.id,
+        rollout.group_folder,
+      );
+      if (!result) continue;
+
+      const runs = getRunsForRollout(rollout.id);
+      const now = new Date().toISOString();
+
+      for (const run of runs) {
+        const evalId = `weval-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        recordEvaluation({
+          id: evalId,
+          run_id: run.id,
+          score: result.overall,
+          dimensions: JSON.stringify(result.dimensions),
+          evaluation_source: 'evaluator_agent',
+          evaluator_reasoning: result.reasoning,
+          raw_feedback: JSON.stringify({
+            skill_assessment: result.skill_assessment,
+          }),
+          evaluated_at: now,
+        });
+      }
+
+      logger.info(
+        {
+          rolloutId: rollout.id,
+          tasks: runs.length,
+          score: result.overall,
+        },
+        'Worker rollout evaluation recorded',
+      );
+    } catch (err) {
+      logger.error(
+        { err, rolloutId: rollout.id },
+        'Error evaluating worker rollout',
+      );
     }
   }
 }

@@ -103,6 +103,8 @@ export interface SkillTaskRun {
   status: string;
   created_at: string;
   evaluation_deadline: string | null;
+  worker_task_id: string | null;      // ADD THIS — links to worker_tasks.id
+  root_outcome_score: number | null;  // ADD THIS — propagated from synthesis eval
 }
 
 export interface ToolCall {
@@ -127,6 +129,7 @@ export interface Rollout {
   group_folder: string;
   chat_jid: string;
   status: 'open' | 'closed';
+  rollout_type: 'conversation' | 'worker';
   turn_count: number;
   created_at: string;
   closed_at: string | null;

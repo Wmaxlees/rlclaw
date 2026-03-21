@@ -21,12 +21,14 @@ import {
   getLowScoringRollouts,
   getRecentEvaluationCount,
   getSkillById,
+  getSkillByName,
   getSkillPerformance,
   getSkillSelectionsForRun,
   getSkillVersionCount,
   getTotalEvaluatedRuns,
   insertEvolutionLog,
   insertSkill,
+  runDbTransaction,
   updateSkillStatus,
 } from '../db.js';
 import { readEnvFile } from '../env.js';
@@ -172,8 +174,15 @@ function buildEvolutionContext(): string {
         .filter(Boolean);
 
       sections.push(`#### Turn ${i + 1}`);
-      sections.push(`User: ${run.prompt_summary || '(no summary)'}`);
-      sections.push(`Response: ${run.response_summary || '(no summary)'}`);
+      sections.push('**User:**');
+      sections.push('```');
+      sections.push(run.prompt_summary || '(no summary)');
+      sections.push('```');
+      sections.push('');
+      sections.push('**Assistant:**');
+      sections.push('```');
+      sections.push(run.response_summary || '(no summary)');
+      sections.push('```');
 
       if (run.tool_calls) {
         try {
@@ -188,8 +197,11 @@ function buildEvolutionContext(): string {
               sections.push(`  - ${t.name}: ${t.output.slice(0, 100)}`);
             }
           }
-        } catch {
-          // ignore parse errors
+        } catch (err) {
+          logger.warn(
+            { runId: run.id, err },
+            'Failed to parse tool_calls JSON',
+          );
         }
       }
 
@@ -203,8 +215,11 @@ function buildEvolutionContext(): string {
           sections.push(
             `Scores: helpfulness=${dims.helpfulness}, accuracy=${dims.accuracy}, efficiency=${dims.efficiency}, tone=${dims.tone}, tool_selection=${dims.tool_selection ?? 'n/a'}`,
           );
-        } catch {
-          // ignore parse errors
+        } catch (err) {
+          logger.warn(
+            { runId: run.id, err },
+            'Failed to parse dimensions JSON',
+          );
         }
       }
 
@@ -305,18 +320,19 @@ async function applyAction(
         group_folder: existing.group_folder,
       };
 
-      // Retire old version
-      updateSkillStatus(existing.id, 'retired');
-      insertSkill(newSkill);
-
-      insertEvolutionLog({
-        id: logId,
-        group_folder: existing.group_folder,
-        action: 'modify',
-        skill_id: newId,
-        changes_summary: action.reasoning,
-        trigger_reason: triggerReason,
-        created_at: now,
+      // Retire old version and insert new version atomically
+      runDbTransaction(() => {
+        updateSkillStatus(existing.id, 'retired');
+        insertSkill(newSkill);
+        insertEvolutionLog({
+          id: logId,
+          group_folder: existing.group_folder,
+          action: 'modify',
+          skill_id: newId,
+          changes_summary: action.reasoning,
+          trigger_reason: triggerReason,
+          created_at: now,
+        });
       });
 
       logger.info(
@@ -354,16 +370,17 @@ async function applyAction(
         group_folder: null, // Global by default
       };
 
-      insertSkill(newSkill);
-
-      insertEvolutionLog({
-        id: logId,
-        group_folder: null,
-        action: 'create',
-        skill_id: newId,
-        changes_summary: action.reasoning,
-        trigger_reason: triggerReason,
-        created_at: now,
+      runDbTransaction(() => {
+        insertSkill(newSkill);
+        insertEvolutionLog({
+          id: logId,
+          group_folder: null,
+          action: 'create',
+          skill_id: newId,
+          changes_summary: action.reasoning,
+          trigger_reason: triggerReason,
+          created_at: now,
+        });
       });
 
       logger.info(
@@ -385,16 +402,17 @@ async function applyAction(
         return;
       }
 
-      updateSkillStatus(existing.id, 'retired');
-
-      insertEvolutionLog({
-        id: logId,
-        group_folder: existing.group_folder,
-        action: 'retire',
-        skill_id: existing.id,
-        changes_summary: action.reasoning,
-        trigger_reason: triggerReason,
-        created_at: now,
+      runDbTransaction(() => {
+        updateSkillStatus(existing.id, 'retired');
+        insertEvolutionLog({
+          id: logId,
+          group_folder: existing.group_folder,
+          action: 'retire',
+          skill_id: existing.id,
+          changes_summary: action.reasoning,
+          trigger_reason: triggerReason,
+          created_at: now,
+        });
       });
 
       logger.info({ skill: action.skill_name }, 'Skill retired by evolution');
@@ -431,30 +449,34 @@ function processCandidates(): void {
     const logId = `evo-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     if (perf.avg_score >= baseline) {
-      updateSkillStatus(candidate.id, 'active');
-      insertEvolutionLog({
-        id: logId,
-        group_folder: candidate.group_folder,
-        action: 'modify', // status change
-        skill_id: candidate.id,
-        changes_summary: `Promoted from candidate: avg ${perf.avg_score.toFixed(2)} >= baseline ${baseline.toFixed(2)}`,
-        trigger_reason: 'periodic',
-        created_at: now,
+      runDbTransaction(() => {
+        updateSkillStatus(candidate.id, 'active');
+        insertEvolutionLog({
+          id: logId,
+          group_folder: candidate.group_folder,
+          action: 'modify', // status change
+          skill_id: candidate.id,
+          changes_summary: `Promoted from candidate: avg ${perf.avg_score.toFixed(2)} >= baseline ${baseline.toFixed(2)}`,
+          trigger_reason: 'periodic',
+          created_at: now,
+        });
       });
       logger.info(
         { skill: candidate.name, avgScore: perf.avg_score, baseline },
         'Candidate skill promoted to active',
       );
     } else {
-      updateSkillStatus(candidate.id, 'retired');
-      insertEvolutionLog({
-        id: logId,
-        group_folder: candidate.group_folder,
-        action: 'retire',
-        skill_id: candidate.id,
-        changes_summary: `Candidate retired: avg ${perf.avg_score.toFixed(2)} < baseline ${baseline.toFixed(2)}`,
-        trigger_reason: 'periodic',
-        created_at: now,
+      runDbTransaction(() => {
+        updateSkillStatus(candidate.id, 'retired');
+        insertEvolutionLog({
+          id: logId,
+          group_folder: candidate.group_folder,
+          action: 'retire',
+          skill_id: candidate.id,
+          changes_summary: `Candidate retired: avg ${perf.avg_score.toFixed(2)} < baseline ${baseline.toFixed(2)}`,
+          trigger_reason: 'periodic',
+          created_at: now,
+        });
       });
       logger.info(
         { skill: candidate.name, avgScore: perf.avg_score, baseline },
@@ -486,18 +508,19 @@ function processRollbacks(): void {
       const now = new Date().toISOString();
       const logId = `evo-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-      // Rollback: retire current, re-activate parent
-      updateSkillStatus(skill.id, 'retired');
-      updateSkillStatus(parent.id, 'active');
-
-      insertEvolutionLog({
-        id: logId,
-        group_folder: skill.group_folder,
-        action: 'modify',
-        skill_id: parent.id,
-        changes_summary: `Rolled back from v${skill.version} to v${parent.version}: score dropped from ${parentPerf.avg_score.toFixed(2)} to ${currentPerf.avg_score.toFixed(2)}`,
-        trigger_reason: 'score_decline',
-        created_at: now,
+      // Rollback: retire current, re-activate parent (atomically)
+      runDbTransaction(() => {
+        updateSkillStatus(skill.id, 'retired');
+        updateSkillStatus(parent.id, 'active');
+        insertEvolutionLog({
+          id: logId,
+          group_folder: skill.group_folder,
+          action: 'modify',
+          skill_id: parent.id,
+          changes_summary: `Rolled back from v${skill.version} to v${parent.version}: score dropped from ${parentPerf.avg_score.toFixed(2)} to ${currentPerf.avg_score.toFixed(2)}`,
+          trigger_reason: 'score_decline',
+          created_at: now,
+        });
       });
 
       logger.info(
@@ -528,20 +551,50 @@ async function runEvolution(): Promise<void> {
   const context = buildEvolutionContext();
 
   try {
-    const response = await client.messages.create({
-      model: 'claude-sonnet-4-5-20250929',
-      max_tokens: 4000,
-      system: evolutionPrompt,
-      messages: [{ role: 'user', content: context }],
-    });
+    // Fix 7: 30-second timeout on evolution API call
+    const response = await Promise.race([
+      client.messages.create({
+        model: 'claude-sonnet-4-5-20250929',
+        max_tokens: 4000,
+        system: evolutionPrompt,
+        messages: [{ role: 'user', content: context }],
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('evolution_timeout')), 30000),
+      ),
+    ]);
 
-    const text =
-      response.content[0].type === 'text' ? response.content[0].text : '';
+    // Fix 6: Validate response structure before accessing content[0]
+    if (
+      !response.content ||
+      response.content.length === 0 ||
+      response.content[0].type !== 'text'
+    ) {
+      logger.error(
+        {},
+        'Evolution response missing or non-text content[0], aborting cycle',
+      );
+      return;
+    }
+
+    const text = response.content[0].text;
     const cleaned = text
       .replace(/^```json?\s*/m, '')
       .replace(/```\s*$/m, '')
       .trim();
     const result = JSON.parse(cleaned) as EvolutionResponse;
+
+    // Fix 6: Validate parsed JSON structure
+    if (
+      !Array.isArray(result.actions) ||
+      !Array.isArray(result.missed_selections)
+    ) {
+      logger.error(
+        { rawResponse: cleaned.slice(0, 200) },
+        'Evolution response failed schema validation (actions/missed_selections must be arrays)',
+      );
+      return;
+    }
 
     // Determine trigger reason
     const lastEvolution = getLastEvolutionTimestamp();
@@ -571,14 +624,22 @@ async function runEvolution(): Promise<void> {
       }
     }
 
-    // Log missed selections
+    // Fix 10: Log missed selections using skill ID (look up by name)
     for (const missed of result.missed_selections) {
+      const skill = getSkillByName(missed.skill_name, null);
+      if (!skill) {
+        logger.warn(
+          { skillName: missed.skill_name, runId: missed.run_id },
+          'Missed selection references unknown skill, skipping log entry',
+        );
+        continue;
+      }
       const logId = `evo-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       insertEvolutionLog({
         id: logId,
         group_folder: null,
         action: 'modify', // signal, not a real modification
-        skill_id: missed.skill_name,
+        skill_id: skill.id,
         changes_summary: `Missed selection in ${missed.run_id}: ${missed.reasoning}`,
         trigger_reason: 'gap_detected',
         created_at: new Date().toISOString(),
@@ -594,6 +655,19 @@ async function runEvolution(): Promise<void> {
       'Evolution cycle complete',
     );
   } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    // Fix 7: Treat timeout and rate-limit as warn (will retry next poll)
+    if (
+      errMsg === 'evolution_timeout' ||
+      (typeof (err as { status?: number }).status === 'number' &&
+        (err as { status: number }).status === 429)
+    ) {
+      logger.warn(
+        { err },
+        'Evolution API call timed out or rate-limited, will retry',
+      );
+      return;
+    }
     logger.error({ err }, 'Evolution agent API call failed');
   }
 }

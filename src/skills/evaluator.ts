@@ -64,10 +64,15 @@ function buildRolloutMessage(
       .map((s) => s.name);
 
     sections.push(`## Turn ${i + 1} of ${runs.length}`);
-    sections.push(`**User:** ${run.prompt_summary ?? '(no prompt recorded)'}`);
-    sections.push(
-      `**Assistant:** ${run.response_summary ?? '(no response recorded)'}`,
-    );
+    sections.push('**User:**');
+    sections.push('```');
+    sections.push(run.prompt_summary ?? '(no prompt recorded)');
+    sections.push('```');
+    sections.push('');
+    sections.push('**Assistant:**');
+    sections.push('```');
+    sections.push(run.response_summary ?? '(no response recorded)');
+    sections.push('```');
 
     if (run.tool_calls) {
       try {
@@ -85,8 +90,8 @@ function buildRolloutMessage(
             );
           }
         }
-      } catch {
-        // ignore parse errors
+      } catch (err) {
+        logger.warn({ runId: run.id, err }, 'Failed to parse tool_calls JSON');
       }
     }
 
@@ -120,21 +125,69 @@ async function evaluateRollout(
   const userMessage = buildRolloutMessage(runs, allSkills);
 
   try {
-    const response = await client.messages.create({
-      model: 'claude-sonnet-4-5-20250929',
-      max_tokens: 600,
-      system: evaluatorPrompt,
-      messages: [{ role: 'user', content: userMessage }],
-    });
+    const response = await Promise.race([
+      client.messages.create({
+        model: 'claude-sonnet-4-5-20250929',
+        max_tokens: 600,
+        system: evaluatorPrompt,
+        messages: [{ role: 'user', content: userMessage }],
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('evaluator_timeout')), 30000),
+      ),
+    ]);
 
-    const text =
-      response.content[0].type === 'text' ? response.content[0].text : '';
+    // Fix 1: Validate response structure before accessing content[0]
+    if (
+      !response.content ||
+      response.content.length === 0 ||
+      response.content[0].type !== 'text'
+    ) {
+      logger.warn(
+        { rolloutId },
+        'Evaluator response missing or non-text content[0], skipping',
+      );
+      return null;
+    }
+
+    const text = response.content[0].text;
     const cleaned = text
       .replace(/^```json?\s*/m, '')
       .replace(/```\s*$/m, '')
       .trim();
-    return JSON.parse(cleaned) as EvaluatorResponse;
+    const result = JSON.parse(cleaned) as EvaluatorResponse;
+
+    // Fix 2: Validate parsed JSON structure
+    if (
+      typeof result.overall !== 'number' ||
+      result.overall < 0 ||
+      result.overall > 1 ||
+      typeof result.dimensions !== 'object' ||
+      result.dimensions === null ||
+      typeof result.reasoning !== 'string'
+    ) {
+      logger.error(
+        { rolloutId, rawResponse: cleaned.slice(0, 200) },
+        'Evaluator response failed schema validation',
+      );
+      return null;
+    }
+
+    return result;
   } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    // Fix 3: Treat timeout and rate-limit as warn (will retry next poll)
+    if (
+      errMsg === 'evaluator_timeout' ||
+      (typeof (err as { status?: number }).status === 'number' &&
+        (err as { status: number }).status === 429)
+    ) {
+      logger.warn(
+        { err, rolloutId },
+        'Evaluator API call timed out or rate-limited, will retry',
+      );
+      return null;
+    }
     logger.error({ err, rolloutId }, 'Evaluator API call failed');
     return null;
   }

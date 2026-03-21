@@ -61,14 +61,18 @@ async function processPendingTasks(deps: WorkerManagerDeps): Promise<void> {
     });
 
     // Don't await — let workers run concurrently
-    runWorker(task, deps).catch((err) => {
-      logger.error({ taskId: task.id, err }, 'Worker run uncaught error');
-      updateWorkerTask(task.id, {
-        status: 'failed',
-        error: String(err),
-        completed_at: new Date().toISOString(),
-      });
-    });
+    (async () => {
+      try {
+        await runWorker(task, deps);
+      } catch (err) {
+        logger.error({ taskId: task.id, err }, 'Worker run failed');
+        updateWorkerTask(task.id, {
+          status: 'failed',
+          error: String(err),
+          completed_at: new Date().toISOString(),
+        });
+      }
+    })();
   }
 }
 
@@ -122,7 +126,7 @@ async function runWorker(
   );
 
   // Build worker prompt: task description + parent chain + wall context
-  const prompt = buildWorkerPrompt(task, wallEntries, ipcDir);
+  const prompt = buildWorkerPrompt(task, wallEntries);
 
   logger.info(
     { taskId: task.id, depth: task.depth, groupFolder: group.folder },
@@ -177,7 +181,11 @@ async function runWorker(
       completed_at: new Date().toISOString(),
     });
   } else {
-    const result = resultChunks.join('\n').trim() || '(no output)';
+    const MAX_RESULT_BYTES = 500_000;
+    let result = resultChunks.join('\n').trim() || '(no output)';
+    if (result.length > MAX_RESULT_BYTES) {
+      result = result.slice(0, MAX_RESULT_BYTES) + '\n...[truncated]';
+    }
     logger.info(
       { taskId: task.id, resultLength: result.length },
       'Worker task completed',
@@ -197,50 +205,56 @@ async function checkParentCompletion(
   task: WorkerTask,
   deps: WorkerManagerDeps,
 ): Promise<void> {
-  if (!task.parent_task_id) {
-    // This IS the root task — trigger synthesis
-    const updated = getWorkerTask(task.id);
-    if (updated?.status === 'done' && updated.result) {
-      await deps.onRootTaskComplete(
-        updated,
-        updated.result,
-        task.group_folder,
-        task.chat_jid,
-      );
+  let current = task;
+  let depth = 0;
+
+  while (depth < 20) {
+    depth++;
+    if (!current.parent_task_id) {
+      // Root task complete
+      const updated = getWorkerTask(current.id);
+      if (updated?.status === 'done' && updated.result) {
+        await deps.onRootTaskComplete(
+          updated,
+          updated.result,
+          current.group_folder,
+          current.chat_jid,
+        );
+      }
+      return;
     }
-    return;
+
+    const siblings = getChildTasks(current.parent_task_id);
+    const allDone = siblings.every(
+      (s) => s.status === 'done' || s.status === 'failed',
+    );
+    if (!allDone) return;
+
+    const successResults = siblings
+      .filter((s) => s.status === 'done' && s.result)
+      .map((s) => `[${s.description}]\n${s.result}`)
+      .join('\n\n');
+
+    updateWorkerTask(current.parent_task_id, {
+      status: 'done',
+      result: successResults || '(all subtasks failed)',
+      completed_at: new Date().toISOString(),
+    });
+
+    const parent = getWorkerTask(current.parent_task_id);
+    if (!parent) return;
+    current = parent;
   }
 
-  const siblings = getChildTasks(task.parent_task_id);
-  const allDone = siblings.every(
-    (s) => s.status === 'done' || s.status === 'failed',
+  logger.warn(
+    { taskId: task.id },
+    'checkParentCompletion hit depth limit, possible cycle',
   );
-
-  if (!allDone) return;
-
-  // Synthesize parent result from children
-  const successResults = siblings
-    .filter((s) => s.status === 'done' && s.result)
-    .map((s) => `[${s.description}]\n${s.result}`)
-    .join('\n\n');
-
-  updateWorkerTask(task.parent_task_id, {
-    status: 'done',
-    result: successResults || '(all subtasks failed)',
-    completed_at: new Date().toISOString(),
-  });
-
-  // Recurse up the tree
-  const parent = getWorkerTask(task.parent_task_id);
-  if (parent) {
-    await checkParentCompletion(parent, deps);
-  }
 }
 
 function buildWorkerPrompt(
   task: WorkerTask,
   wallEntries: Array<{ author: string; type: string; content: string }>,
-  _ipcDir: string,
 ): string {
   const lines: string[] = [];
 
@@ -272,7 +286,7 @@ function buildWorkerPrompt(
     'You can create subtasks by writing a JSON file to /workspace/ipc/tasks/ with:',
   );
   lines.push(
-    '  {"type":"create_worker_task","description":"<task>","parentTaskId":"<your_task_id>","parentDepth":<your_depth>}',
+    '  {"type":"create_worker_task","description":"<task>","parentTaskId":"<your_task_id>"}',
   );
   lines.push('You can post findings to the shared wall by writing:');
   lines.push(

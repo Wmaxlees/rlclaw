@@ -35,6 +35,7 @@ You will receive one or more low-scoring rollouts. Each rollout contains up to 6
 - **Skills selected**: Which behavioral skills were active for that turn
 
 After the turns, each rollout includes:
+
 - **Evaluator score**: The overall score (0.0–1.0) given by the quality evaluator
 - **Evaluator reasoning**: The evaluator's explanation of what went wrong — use this as your primary signal for what needs fixing. This is NOT root cause analysis — it is the evaluator's observation of what behaviors contributed to the score. Use it alongside the raw turns and tool calls to determine which skill changes would have improved the outcome.
 - **Available skills**: All skills that existed at the time (whether selected or not)
@@ -53,40 +54,40 @@ After the turns, each rollout includes:
 Respond with ONLY a JSON object (no markdown fencing):
 
 {
-  "actions": [
-    {
-      "type": "modify",
-      "skill_name": "code-review",
-      "new_content": "# Code Review\n\n<!-- EVOLUTION_NOTES\nv2 (2025-03-15): Added ...\nv1 (2025-03-05): Initial.\n-->\n\nGuidelines...",
-      "new_description": "Updated description if changed",
-      "reasoning": "Why this change was made, citing specific rollout evidence"
-    },
-    {
-      "type": "create",
-      "skill_name": "new-skill-name",
-      "content": "# Skill Title\n\n<!-- EVOLUTION_NOTES\nv1 (2025-03-15): Initial creation — {evidence}.\n-->\n\nGuidelines...",
-      "description": "Short description for browsing",
-      "reasoning": "Why this skill is needed, citing specific rollout evidence"
-    },
-    {
-      "type": "retire",
-      "skill_name": "old-skill",
-      "reasoning": "Why this skill should be retired"
-    }
-  ],
-  "missed_selections": [
-    {
-      "rollout_id": "rollout-xxx",
-      "skill_name": "skill-that-should-have-been-used",
-      "reasoning": "Why it was relevant to this rollout"
-    }
-  ],
-  "summary": "Brief overview of all changes made and the evidence behind them"
+"actions": [
+{
+"type": "modify",
+"skill_name": "code-review",
+"new_content": "# Code Review\n\n<!-- EVOLUTION_NOTES\nv2 (2025-03-15): Added ...\nv1 (2025-03-05): Initial.\n-->\n\nGuidelines...",
+"new_description": "Updated description if changed",
+"reasoning": "Why this change was made, citing specific rollout evidence"
+},
+{
+"type": "create",
+"skill_name": "new-skill-name",
+"content": "# Skill Title\n\n<!-- EVOLUTION_NOTES\nv1 (2025-03-15): Initial creation — {evidence}.\n-->\n\nGuidelines...",
+"description": "Short description for browsing",
+"reasoning": "Why this skill is needed, citing specific rollout evidence"
+},
+{
+"type": "retire",
+"skill_name": "old-skill",
+"reasoning": "Why this skill should be retired"
+}
+],
+"missed_selections": [
+{
+"rollout_id": "rollout-xxx",
+"skill_name": "skill-that-should-have-been-used",
+"reasoning": "Why it was relevant to this rollout"
+}
+],
+"summary": "Brief overview of all changes made and the evidence behind them"
 }
 
 If no changes are needed, return:
 {
-  "actions": [],
-  "missed_selections": [],
-  "summary": "No changes needed — explanation"
+"actions": [],
+"missed_selections": [],
+"summary": "No changes needed — explanation"
 }

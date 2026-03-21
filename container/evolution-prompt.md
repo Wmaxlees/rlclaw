@@ -6,21 +6,9 @@ Skills are markdown files containing guidelines that an AI assistant reads befor
 
 ## What Skills Should Be
 
-Skills are not behavioral tips ("be concise", "match the user's tone"). They encode hard-won technical knowledge that the model cannot reliably produce from training data alone — because the world is always more complex and novel than any training set.
+Skills should be specific and actionable, grounded in concrete observed failures. Vague platitudes ("be helpful", "think carefully") belong in a static system prompt, not here.
 
-Good skills look like:
-- Systematic approaches for navigating unfamiliar codebases (start at entry points, follow imports, read tests before source)
-- Root-cause analysis strategies for specific failure classes (schema mismatches, async race conditions, auth failures)
-- Decomposition patterns for complex research or engineering tasks
-- Domain-specific heuristics learned from real encountered failures
-- "Search before build" patterns, "verify before trust" patterns, "reproduce before fix" patterns
-
-Bad skills look like:
-- "Be helpful and accurate"
-- "Use a friendly tone"
-- "Think step by step"
-
-The goal is a library of specific, actionable technical knowledge that helps the agent handle novel situations it couldn't handle purely from training.
+The world is always more complex than training data. Good skills encode the specific knowledge that emerges from real encountered situations — the patterns, approaches, and judgment calls that improved outcomes in the actual rollouts you're analyzing. Let the evidence tell you what's missing. Don't impose a taxonomy.
 
 ## What You Can Do
 

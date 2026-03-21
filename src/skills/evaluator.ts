@@ -49,9 +49,9 @@ interface EvaluatorResponse {
   dimensions: {
     helpfulness: number;
     accuracy: number;
-    efficiency: number;
-    tone: number;
+    reasoning_quality: number;
     tool_selection: number;
+    knowledge_application: number;
   };
   reasoning: string;
   skill_assessment: string;
@@ -62,9 +62,9 @@ interface WorkerEvaluatorResponse {
   dimensions: {
     task_completion: number;
     accuracy: number;
-    efficiency: number;
+    reasoning_quality: number;
     decomposition_quality: number;
-    result_quality: number;
+    knowledge_application: number;
   };
   reasoning: string;
   skill_assessment: string;

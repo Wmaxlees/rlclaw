@@ -6,6 +6,8 @@
  */
 import { ROLLOUT_INACTIVITY_MS, ROLLOUT_SIZE } from '../config.js';
 import {
+  closeWorkerRollout as closeWorkerRolloutDb,
+  createWorkerRollout as createWorkerRolloutDb,
   getOpenRollout,
   getStaleOpenRollouts,
   insertRollout,
@@ -54,6 +56,7 @@ export function getOrCreateRollout(
     group_folder: groupFolder,
     chat_jid: chatJid,
     status: 'open',
+    rollout_type: 'conversation',
     turn_count: 1,
     created_at: now,
     closed_at: null,
@@ -80,4 +83,26 @@ export function closeStaleRollouts(): void {
       'Rollout closed: inactivity timeout',
     );
   }
+}
+
+/**
+ * Create a worker rollout for a root task tree. Idempotent.
+ * Delegates to db — the ID is `worker-{rootTaskId}`.
+ */
+export function createWorkerRollout(
+  rootTaskId: string,
+  chatJid: string,
+  groupFolder: string,
+): void {
+  createWorkerRolloutDb(rootTaskId, chatJid, groupFolder);
+  logger.debug({ rootTaskId }, 'Worker rollout ensured');
+}
+
+/**
+ * Close the worker rollout for a root task tree.
+ * Call this after the synthesis message is sent.
+ */
+export function closeWorkerRollout(rootTaskId: string): void {
+  closeWorkerRolloutDb(rootTaskId);
+  logger.info({ rootTaskId }, 'Worker rollout closed');
 }

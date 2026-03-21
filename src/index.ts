@@ -62,7 +62,7 @@ import {
   loadSenderAllowlist,
   shouldDropMessage,
 } from './sender-allowlist.js';
-import { startEvaluationLoop } from './skills/evaluator.js';
+import { scoreAndCloseWorkerRollout, startEvaluationLoop } from './skills/evaluator.js';
 import { startEvolutionLoop } from './skills/evolution.js';
 import { handleReactionFeedback } from './skills/reaction-scorer.js';
 import { startSchedulerLoop } from './task-scheduler.js';
@@ -322,6 +322,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       status: runStatus,
       created_at: new Date().toISOString(),
       evaluation_deadline: null, // Evaluation is triggered by rollout closure, not per-run deadline
+      worker_task_id: null,
+      root_outcome_score: null,
     });
 
     // Link any skills the agent reported using
@@ -892,6 +894,7 @@ async function main(): Promise<void> {
           '',
           `Result:\n${result}`,
         ].join('\n');
+        let synthesisText = '';
         await runAgent(group, synthesisPrompt, chatJid, async (out) => {
           if (out.result) {
             const raw =
@@ -902,6 +905,7 @@ async function main(): Promise<void> {
               .replace(/<internal>[\s\S]*?<\/internal>/g, '')
               .trim();
             if (text) {
+              synthesisText += text;
               try {
                 await channel.sendMessage(chatJid, text);
               } catch (sendErr) {
@@ -912,6 +916,14 @@ async function main(): Promise<void> {
               }
             }
           }
+        });
+        // Score synthesis and close worker rollout for evaluation
+        scoreAndCloseWorkerRollout(
+          task.id,
+          task.description,
+          synthesisText,
+        ).catch((err) => {
+          logger.warn({ taskId: task.id, err }, 'scoreAndCloseWorkerRollout failed');
         });
       } catch (err) {
         logger.error(

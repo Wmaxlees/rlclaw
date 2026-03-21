@@ -19,6 +19,7 @@ import {
   getAllSkillPerformance,
   getLastEvolutionTimestamp,
   getLowScoringRollouts,
+  getLowScoringWorkerRollouts,
   getRecentEvaluationCount,
   getSkillById,
   getSkillByName,
@@ -253,6 +254,39 @@ function buildEvolutionContext(): string {
     sections.push(
       `- ${skill?.name || perf.skill_id}: ${perf.total_runs} runs, avg ${perf.avg_score.toFixed(2)}, recent ${perf.recent_avg_score.toFixed(2)}`,
     );
+  }
+
+  // Low-scoring worker rollouts
+  const lowWorkerRollouts = getLowScoringWorkerRollouts(EVOLUTION_SCORE_THRESHOLD, 5);
+  sections.push('## Low-Scoring Worker Task Trees\n');
+  if (lowWorkerRollouts.length === 0) {
+    sections.push('(No low-scoring worker rollouts found)\n');
+  }
+  for (const rollout of lowWorkerRollouts) {
+    sections.push(
+      `### Worker Tree ${rollout.rollout_id} (avg score: ${rollout.avg_score.toFixed(2)})`,
+    );
+
+    for (let i = 0; i < rollout.runs.length; i++) {
+      const run = rollout.runs[i];
+      sections.push(`#### Task ${i + 1}`);
+      sections.push('**Description:**');
+      sections.push('```');
+      sections.push(run.prompt_summary || '(no description)');
+      sections.push('```');
+      sections.push(`**Status:** ${run.status} | **Score:** ${run.score.toFixed(2)}`);
+      if (run.root_outcome_score !== null && run.root_outcome_score !== undefined) {
+        sections.push(`**Root Outcome:** ${(run.root_outcome_score as number).toFixed(2)}`);
+      }
+      sections.push('**Result:**');
+      sections.push('```');
+      sections.push(run.response_summary || '(no result)');
+      sections.push('```');
+      if (run.evaluator_reasoning) {
+        sections.push(`**Evaluator notes:** ${run.evaluator_reasoning}`);
+      }
+      sections.push('');
+    }
   }
 
   return sections.join('\n');

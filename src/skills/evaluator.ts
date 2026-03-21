@@ -49,9 +49,9 @@ interface EvaluatorResponse {
   dimensions: {
     helpfulness: number;
     accuracy: number;
-    efficiency: number;
-    tone: number;
+    reasoning_quality: number;
     tool_selection: number;
+    knowledge_application: number;
   };
   reasoning: string;
   skill_assessment: string;
@@ -62,9 +62,9 @@ interface WorkerEvaluatorResponse {
   dimensions: {
     task_completion: number;
     accuracy: number;
-    efficiency: number;
+    reasoning_quality: number;
     decomposition_quality: number;
-    result_quality: number;
+    knowledge_application: number;
   };
   reasoning: string;
   skill_assessment: string;
@@ -151,7 +151,10 @@ function buildWorkerRolloutMessage(
     sections.push('```');
     sections.push(run.response_summary ?? '(no result recorded)');
     sections.push('```');
-    if (run.root_outcome_score !== null && run.root_outcome_score !== undefined) {
+    if (
+      run.root_outcome_score !== null &&
+      run.root_outcome_score !== undefined
+    ) {
       sections.push(
         `**Root Outcome Score:** ${(run.root_outcome_score as number).toFixed(2)} (synthesis quality)`,
       );
@@ -378,7 +381,11 @@ Return ONLY a JSON object with a single field: {"overall": 0.0-1.0}
         .replace(/```\s*$/m, '')
         .trim();
       const parsed = JSON.parse(cleaned) as { overall: number };
-      if (typeof parsed.overall === 'number' && parsed.overall >= 0 && parsed.overall <= 1) {
+      if (
+        typeof parsed.overall === 'number' &&
+        parsed.overall >= 0 &&
+        parsed.overall <= 1
+      ) {
         updateRootOutcomeScore(rootTaskId, parsed.overall);
         logger.info(
           { rootTaskId, score: parsed.overall },
@@ -387,7 +394,10 @@ Return ONLY a JSON object with a single field: {"overall": 0.0-1.0}
       }
     }
   } catch (err) {
-    logger.warn({ rootTaskId, err }, 'Failed to score synthesis, skipping root outcome score');
+    logger.warn(
+      { rootTaskId, err },
+      'Failed to score synthesis, skipping root outcome score',
+    );
   }
 }
 

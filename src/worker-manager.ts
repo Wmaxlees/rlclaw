@@ -272,7 +272,7 @@ function buildWorkerPrompt(
     'You can create subtasks by writing a JSON file to /workspace/ipc/tasks/ with:',
   );
   lines.push(
-    '  {"type":"create_worker_task","chatJid":"<chat_jid>","description":"<task>","parentTaskId":"<your_task_id>","parentDepth":<your_depth>}',
+    '  {"type":"create_worker_task","description":"<task>","parentTaskId":"<your_task_id>","parentDepth":<your_depth>}',
   );
   lines.push('You can post findings to the shared wall by writing:');
   lines.push(

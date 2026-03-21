@@ -23,7 +23,6 @@ Write a JSON file to `/workspace/ipc/tasks/delegate-<id>.json`:
 ```json
 {
   "type": "create_worker_task",
-  "chatJid": "<the chat JID from your context>",
   "description": "Clear description of what the worker should do and what output is expected"
 }
 ```

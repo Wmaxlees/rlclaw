@@ -612,7 +612,20 @@ export async function processTaskIpc(
       break;
 
     case 'create_worker_task':
-      if (data.description && data.chatJid) {
+      if (data.description) {
+        // chatJid can be omitted — fall back to looking up the group's registered JID
+        const resolvedJid =
+          data.chatJid ??
+          Object.entries(registeredGroups).find(
+            ([, g]) => g.folder === sourceGroup,
+          )?.[0];
+        if (!resolvedJid) {
+          logger.warn(
+            { sourceGroup },
+            'create_worker_task: cannot resolve chatJid for group',
+          );
+          break;
+        }
         const parentId = data.parentTaskId as string | undefined;
         const depth = parentId
           ? ((data.parentDepth as number | undefined) ?? 0) + 1
@@ -628,7 +641,7 @@ export async function processTaskIpc(
         const task: WorkerTask = {
           id: taskId,
           group_folder: sourceGroup,
-          chat_jid: data.chatJid,
+          chat_jid: resolvedJid,
           parent_task_id: parentId ?? null,
           depth,
           description: data.description,

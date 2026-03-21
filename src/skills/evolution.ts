@@ -257,7 +257,10 @@ function buildEvolutionContext(): string {
   }
 
   // Low-scoring worker rollouts
-  const lowWorkerRollouts = getLowScoringWorkerRollouts(EVOLUTION_SCORE_THRESHOLD, 5);
+  const lowWorkerRollouts = getLowScoringWorkerRollouts(
+    EVOLUTION_SCORE_THRESHOLD,
+    5,
+  );
   sections.push('## Low-Scoring Worker Task Trees\n');
   if (lowWorkerRollouts.length === 0) {
     sections.push('(No low-scoring worker rollouts found)\n');
@@ -274,9 +277,16 @@ function buildEvolutionContext(): string {
       sections.push('```');
       sections.push(run.prompt_summary || '(no description)');
       sections.push('```');
-      sections.push(`**Status:** ${run.status} | **Score:** ${run.score.toFixed(2)}`);
-      if (run.root_outcome_score !== null && run.root_outcome_score !== undefined) {
-        sections.push(`**Root Outcome:** ${(run.root_outcome_score as number).toFixed(2)}`);
+      sections.push(
+        `**Status:** ${run.status} | **Score:** ${run.score.toFixed(2)}`,
+      );
+      if (
+        run.root_outcome_score !== null &&
+        run.root_outcome_score !== undefined
+      ) {
+        sections.push(
+          `**Root Outcome:** ${(run.root_outcome_score as number).toFixed(2)}`,
+        );
       }
       sections.push('**Result:**');
       sections.push('```');

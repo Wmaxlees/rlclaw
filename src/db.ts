@@ -348,6 +348,14 @@ function createSchema(database: Database.Database): void {
       logger.warn({ err }, 'Migration warning: root_outcome_score column');
     }
   }
+  // Create rollout_id index after migration ensures the column exists
+  try {
+    database.exec(
+      `CREATE INDEX IF NOT EXISTS idx_skill_runs_rollout ON skill_task_runs(rollout_id)`,
+    );
+  } catch {
+    /* index already exists or column not yet available */
+  }
 }
 
 export function initDatabase(): void {

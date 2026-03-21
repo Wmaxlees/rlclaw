@@ -62,7 +62,10 @@ import {
   loadSenderAllowlist,
   shouldDropMessage,
 } from './sender-allowlist.js';
-import { scoreAndCloseWorkerRollout, startEvaluationLoop } from './skills/evaluator.js';
+import {
+  scoreAndCloseWorkerRollout,
+  startEvaluationLoop,
+} from './skills/evaluator.js';
 import { startEvolutionLoop } from './skills/evolution.js';
 import { handleReactionFeedback } from './skills/reaction-scorer.js';
 import { startSchedulerLoop } from './task-scheduler.js';
@@ -923,7 +926,10 @@ async function main(): Promise<void> {
           task.description,
           synthesisText,
         ).catch((err) => {
-          logger.warn({ taskId: task.id, err }, 'scoreAndCloseWorkerRollout failed');
+          logger.warn(
+            { taskId: task.id, err },
+            'scoreAndCloseWorkerRollout failed',
+          );
         });
       } catch (err) {
         logger.error(

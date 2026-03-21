@@ -103,8 +103,8 @@ export interface SkillTaskRun {
   status: string;
   created_at: string;
   evaluation_deadline: string | null;
-  worker_task_id: string | null;      // ADD THIS — links to worker_tasks.id
-  root_outcome_score: number | null;  // ADD THIS — propagated from synthesis eval
+  worker_task_id: string | null; // ADD THIS — links to worker_tasks.id
+  root_outcome_score: number | null; // ADD THIS — propagated from synthesis eval
 }
 
 export interface ToolCall {

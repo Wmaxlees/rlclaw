@@ -18,9 +18,7 @@ import {
   recordWorkerTaskRun,
   updateWorkerTask,
 } from './db.js';
-import {
-  createWorkerRollout,
-} from './skills/rollout-manager.js';
+import { createWorkerRollout } from './skills/rollout-manager.js';
 import { resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup, WorkerTask } from './types.js';

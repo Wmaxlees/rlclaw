@@ -1,6 +1,9 @@
 import fs from 'fs';
 import path from 'path';
 
+import Anthropic from '@anthropic-ai/sdk';
+
+import { readEnvFile } from './env.js';
 import {
   ASSISTANT_NAME,
   CREDENTIAL_PROXY_PORT,
@@ -291,13 +294,15 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const runDuration = Date.now() - runStartTime;
   const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const runStatus = output === 'error' || hadError ? 'error' : 'success';
+  const fullResponse = responseChunks.join(' ');
+  const responseSummary = await summarizeResponse(fullResponse);
   try {
     recordSkillTaskRun({
       id: runId,
       group_folder: group.folder,
       chat_jid: chatJid,
       prompt_summary: prompt.slice(0, 500),
-      response_summary: responseChunks.join(' ').slice(0, 1000) || null,
+      response_summary: responseSummary,
       duration_ms: runDuration,
       status: runStatus,
       created_at: new Date().toISOString(),
@@ -354,6 +359,30 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   delete cursorBeforePipe[chatJid];
   saveState();
   return true;
+}
+
+async function summarizeResponse(text: string): Promise<string | null> {
+  if (!text.trim()) return null;
+  // Short responses don't need summarization
+  if (text.length <= 500) return text;
+  try {
+    const secrets = readEnvFile(['ANTHROPIC_API_KEY']);
+    if (!secrets.ANTHROPIC_API_KEY) return text.slice(0, 1000);
+    const client = new Anthropic({ apiKey: secrets.ANTHROPIC_API_KEY });
+    const response = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 200,
+      system:
+        'Summarize the following AI assistant response in 2-3 sentences, capturing the key information and outcome. Be concise.',
+      messages: [{ role: 'user', content: text }],
+    });
+    const summary =
+      response.content[0].type === 'text' ? response.content[0].text : null;
+    return summary || text.slice(0, 1000);
+  } catch (err) {
+    logger.warn({ err }, 'Response summarization failed, using truncation');
+    return text.slice(0, 1000);
+  }
 }
 
 async function runAgent(
@@ -713,7 +742,10 @@ async function main(): Promise<void> {
       try {
         handleReactionFeedback(messageId, chatJid, emoji);
       } catch (err) {
-        logger.warn({ err, chatJid, emoji }, 'Failed to process reaction feedback');
+        logger.warn(
+          { err, chatJid, emoji },
+          'Failed to process reaction feedback',
+        );
       }
     },
   };

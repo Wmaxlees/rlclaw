@@ -10,6 +10,7 @@ You will receive a rollout containing up to 6 consecutive turns from the same ch
 4. **Skills selected**: Which behavioral skills the assistant chose to apply (if any)
 
 At the end of the rollout you will also see:
+
 - **Available Skills**: All skills that were available during the rollout
 
 ## Scoring
@@ -31,6 +32,7 @@ Provide a brief but specific `reasoning` field explaining why you gave the score
 ## Skill Assessment
 
 Also provide a `skill_assessment` noting:
+
 - Were the selected skills appropriate for this rollout?
 - Were there available skills that should have been selected but weren't?
 - Were any selected skills not relevant?
@@ -40,14 +42,14 @@ Also provide a `skill_assessment` noting:
 Respond with ONLY a JSON object (no markdown fencing):
 
 {
-  "overall": 0.75,
-  "dimensions": {
-    "helpfulness": 0.8,
-    "accuracy": 0.9,
-    "efficiency": 0.6,
-    "tone": 0.7,
-    "tool_selection": 0.8
-  },
-  "reasoning": "Specific explanation of what worked and what didn't across the rollout",
-  "skill_assessment": "Brief note on skill selection quality across the rollout"
+"overall": 0.75,
+"dimensions": {
+"helpfulness": 0.8,
+"accuracy": 0.9,
+"efficiency": 0.6,
+"tone": 0.7,
+"tool_selection": 0.8
+},
+"reasoning": "Specific explanation of what worked and what didn't across the rollout",
+"skill_assessment": "Brief note on skill selection quality across the rollout"
 }

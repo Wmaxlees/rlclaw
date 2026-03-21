@@ -320,26 +320,38 @@ export async function runContainerAgent(
   fs.mkdirSync(logsDir, { recursive: true });
 
   return new Promise((resolve) => {
-    const container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    let container: ReturnType<typeof spawn>;
+    try {
+      container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } catch (err) {
+      resolve({
+        status: 'error',
+        result: null,
+        error: `Container spawn failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      return;
+    }
 
-    onProcess(container, containerName);
+    // container is guaranteed non-null here (spawn succeeded or we returned above)
+    const proc = container!;
+    onProcess(proc, containerName);
 
     let stdout = '';
     let stderr = '';
     let stdoutTruncated = false;
     let stderrTruncated = false;
 
-    container.stdin.write(JSON.stringify(input));
-    container.stdin.end();
+    proc.stdin!.write(JSON.stringify(input));
+    proc.stdin!.end();
 
     // Streaming output: parse OUTPUT_START/END marker pairs as they arrive
     let parseBuffer = '';
     let newSessionId: string | undefined;
     let outputChain = Promise.resolve();
 
-    container.stdout.on('data', (data) => {
+    proc.stdout!.on('data', (data) => {
       const chunk = data.toString();
 
       // Always accumulate for logging
@@ -360,6 +372,13 @@ export async function runContainerAgent(
       // Stream-parse for output markers
       if (onOutput) {
         parseBuffer += chunk;
+        if (parseBuffer.length > 10 * 1024 * 1024) {
+          logger.warn(
+            { group: group.name, bufferSize: parseBuffer.length },
+            'parseBuffer exceeded 10MB limit, clearing to prevent memory exhaustion',
+          );
+          parseBuffer = '';
+        }
         let startIdx: number;
         while ((startIdx = parseBuffer.indexOf(OUTPUT_START_MARKER)) !== -1) {
           const endIdx = parseBuffer.indexOf(OUTPUT_END_MARKER, startIdx);
@@ -391,7 +410,7 @@ export async function runContainerAgent(
       }
     });
 
-    container.stderr.on('data', (data) => {
+    proc.stderr!.on('data', (data) => {
       const chunk = data.toString();
       const lines = chunk.trim().split('\n');
       for (const line of lines) {
@@ -445,7 +464,7 @@ export async function runContainerAgent(
       timeout = setTimeout(killOnTimeout, timeoutMs);
     };
 
-    container.on('close', (code) => {
+    proc.on('close', (code) => {
       clearTimeout(timeout);
       const duration = Date.now() - startTime;
 
@@ -650,7 +669,7 @@ export async function runContainerAgent(
       }
     });
 
-    container.on('error', (err) => {
+    proc.on('error', (err) => {
       clearTimeout(timeout);
       logger.error(
         { group: group.name, containerName, error: err },

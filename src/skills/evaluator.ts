@@ -6,9 +6,8 @@
  * routing through the credential proxy — same auth mechanism as container agents.
  */
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import fs from 'fs';
-import path from 'path';
 
+import { loadPrompt } from '../anthropic-client.js';
 import { CREDENTIAL_PROXY_PORT, EVALUATION_POLL_INTERVAL } from '../config.js';
 import { detectAuthMode } from '../credential-proxy.js';
 import {
@@ -26,15 +25,8 @@ import { closeStaleRollouts, closeWorkerRollout } from './rollout-manager.js';
 
 let evaluatorRunning = false;
 
-const evaluatorPrompt = fs.readFileSync(
-  path.join(process.cwd(), 'container', 'evaluator-prompt.md'),
-  'utf-8',
-);
-
-const workerEvaluatorPrompt = fs.readFileSync(
-  path.join(process.cwd(), 'container', 'worker-evaluator-prompt.md'),
-  'utf-8',
-);
+const evaluatorPrompt = loadPrompt('evaluator-prompt.md');
+const workerEvaluatorPrompt = loadPrompt('worker-evaluator-prompt.md');
 
 function buildSdkEnv(): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...process.env };

@@ -14,16 +14,34 @@ interface QueuedTask {
 const MAX_RETRIES = 5;
 const BASE_RETRY_MS = 5000;
 
+/**
+ * Discriminated union encoding the three valid container states.
+ * Impossible combinations (active=true with isTaskContainer=false but runningTaskId set, etc.)
+ * are structurally prevented rather than checked at runtime.
+ */
+type ContainerStatus =
+  | { type: 'idle' }
+  | {
+      type: 'running_messages';
+      containerName: string;
+      groupFolder: string;
+      idleWaiting: boolean;
+      /** Null briefly until registerProcess() is called by the spawner */
+      process: ChildProcess | null;
+    }
+  | {
+      type: 'running_task';
+      taskId: string;
+      containerName: string;
+      groupFolder: string;
+      /** Null briefly until registerProcess() is called by the spawner */
+      process: ChildProcess | null;
+    };
+
 interface GroupState {
-  active: boolean;
-  idleWaiting: boolean;
-  isTaskContainer: boolean;
-  runningTaskId: string | null;
+  container: ContainerStatus;
   pendingMessages: boolean;
   pendingTasks: QueuedTask[];
-  process: ChildProcess | null;
-  containerName: string | null;
-  groupFolder: string | null;
   retryCount: number;
 }
 
@@ -39,15 +57,9 @@ export class GroupQueue {
     let state = this.groups.get(groupJid);
     if (!state) {
       state = {
-        active: false,
-        idleWaiting: false,
-        isTaskContainer: false,
-        runningTaskId: null,
+        container: { type: 'idle' },
         pendingMessages: false,
         pendingTasks: [],
-        process: null,
-        containerName: null,
-        groupFolder: null,
         retryCount: 0,
       };
       this.groups.set(groupJid, state);
@@ -64,7 +76,7 @@ export class GroupQueue {
 
     const state = this.getGroup(groupJid);
 
-    if (state.active) {
+    if (state.container.type !== 'idle') {
       state.pendingMessages = true;
       logger.debug({ groupJid }, 'Container active, message queued');
       return;
@@ -92,8 +104,11 @@ export class GroupQueue {
 
     const state = this.getGroup(groupJid);
 
-    // Prevent double-queuing: check both pending and currently-running task
-    if (state.runningTaskId === taskId) {
+    // Prevent double-queuing
+    if (
+      state.container.type === 'running_task' &&
+      state.container.taskId === taskId
+    ) {
       logger.debug({ groupJid, taskId }, 'Task already running, skipping');
       return;
     }
@@ -102,9 +117,12 @@ export class GroupQueue {
       return;
     }
 
-    if (state.active) {
+    if (state.container.type !== 'idle') {
       state.pendingTasks.push({ id: taskId, groupJid, fn });
-      if (state.idleWaiting) {
+      if (
+        state.container.type === 'running_messages' &&
+        state.container.idleWaiting
+      ) {
         this.closeStdin(groupJid);
       }
       logger.debug({ groupJid, taskId }, 'Container active, task queued');
@@ -123,7 +141,6 @@ export class GroupQueue {
       return;
     }
 
-    // Run immediately
     this.runTask(groupJid, { id: taskId, groupJid, fn }).catch((err) =>
       logger.error({ groupJid, taskId, err }, 'Unhandled error in runTask'),
     );
@@ -136,9 +153,10 @@ export class GroupQueue {
     groupFolder?: string,
   ): void {
     const state = this.getGroup(groupJid);
-    state.process = proc;
-    state.containerName = containerName;
-    if (groupFolder) state.groupFolder = groupFolder;
+    if (state.container.type === 'idle') return;
+    state.container.process = proc;
+    state.container.containerName = containerName;
+    if (groupFolder) state.container.groupFolder = groupFolder;
   }
 
   /**
@@ -147,7 +165,9 @@ export class GroupQueue {
    */
   notifyIdle(groupJid: string): void {
     const state = this.getGroup(groupJid);
-    state.idleWaiting = true;
+    if (state.container.type === 'running_messages') {
+      state.container.idleWaiting = true;
+    }
     if (state.pendingTasks.length > 0) {
       this.closeStdin(groupJid);
     }
@@ -155,15 +175,16 @@ export class GroupQueue {
 
   /**
    * Send a follow-up message to the active container via IPC file.
-   * Returns true if the message was written, false if no active container.
+   * Returns true if the message was written, false if no active message container.
    */
   sendMessage(groupJid: string, text: string): boolean {
     const state = this.getGroup(groupJid);
-    if (!state.active || !state.groupFolder || state.isTaskContainer)
-      return false;
-    state.idleWaiting = false; // Agent is about to receive work, no longer idle
+    if (state.container.type !== 'running_messages') return false;
 
-    const inputDir = path.join(DATA_DIR, 'ipc', state.groupFolder, 'input');
+    const { groupFolder } = state.container;
+    state.container.idleWaiting = false;
+
+    const inputDir = path.join(DATA_DIR, 'ipc', groupFolder, 'input');
     try {
       fs.mkdirSync(inputDir, { recursive: true });
       const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`;
@@ -174,7 +195,7 @@ export class GroupQueue {
       return true;
     } catch (err) {
       logger.error(
-        { groupJid, groupFolder: state.groupFolder, err },
+        { groupJid, groupFolder, err },
         'Failed to write IPC message to container input',
       );
       return false;
@@ -186,15 +207,16 @@ export class GroupQueue {
    */
   closeStdin(groupJid: string): void {
     const state = this.getGroup(groupJid);
-    if (!state.active || !state.groupFolder) return;
+    if (state.container.type === 'idle') return;
 
-    const inputDir = path.join(DATA_DIR, 'ipc', state.groupFolder, 'input');
+    const { groupFolder } = state.container;
+    const inputDir = path.join(DATA_DIR, 'ipc', groupFolder, 'input');
     try {
       fs.mkdirSync(inputDir, { recursive: true });
       fs.writeFileSync(path.join(inputDir, '_close'), '');
     } catch (err) {
       logger.warn(
-        { groupJid, groupFolder: state.groupFolder, err },
+        { groupJid, groupFolder, err },
         'Failed to write close sentinel to container input',
       );
     }
@@ -205,9 +227,13 @@ export class GroupQueue {
     reason: 'messages' | 'drain',
   ): Promise<void> {
     const state = this.getGroup(groupJid);
-    state.active = true;
-    state.idleWaiting = false;
-    state.isTaskContainer = false;
+    state.container = {
+      type: 'running_messages',
+      containerName: '',
+      groupFolder: '',
+      idleWaiting: false,
+      process: null,
+    };
     state.pendingMessages = false;
     this.activeCount++;
 
@@ -229,10 +255,7 @@ export class GroupQueue {
       logger.error({ groupJid, err }, 'Error processing messages for group');
       this.scheduleRetry(groupJid, state);
     } finally {
-      state.active = false;
-      state.process = null;
-      state.containerName = null;
-      state.groupFolder = null;
+      state.container = { type: 'idle' };
       this.activeCount--;
       this.drainGroup(groupJid);
     }
@@ -240,10 +263,13 @@ export class GroupQueue {
 
   private async runTask(groupJid: string, task: QueuedTask): Promise<void> {
     const state = this.getGroup(groupJid);
-    state.active = true;
-    state.idleWaiting = false;
-    state.isTaskContainer = true;
-    state.runningTaskId = task.id;
+    state.container = {
+      type: 'running_task',
+      taskId: task.id,
+      containerName: '',
+      groupFolder: '',
+      process: null,
+    };
     this.activeCount++;
 
     logger.debug(
@@ -256,12 +282,7 @@ export class GroupQueue {
     } catch (err) {
       logger.error({ groupJid, taskId: task.id, err }, 'Error running task');
     } finally {
-      state.active = false;
-      state.isTaskContainer = false;
-      state.runningTaskId = null;
-      state.process = null;
-      state.containerName = null;
-      state.groupFolder = null;
+      state.container = { type: 'idle' };
       this.activeCount--;
       this.drainGroup(groupJid);
     }
@@ -352,19 +373,20 @@ export class GroupQueue {
   }
 
   isActive(groupJid: string): boolean {
-    return this.getGroup(groupJid).active;
+    return this.getGroup(groupJid).container.type !== 'idle';
   }
 
   async shutdown(_gracePeriodMs: number): Promise<void> {
     this.shuttingDown = true;
 
-    // Count active containers but don't kill them — they'll finish on their own
-    // via idle timeout or container timeout. The --rm flag cleans them up on exit.
-    // This prevents WhatsApp reconnection restarts from killing working agents.
     const activeContainers: string[] = [];
-    for (const [jid, state] of this.groups) {
-      if (state.process && !state.process.killed && state.containerName) {
-        activeContainers.push(state.containerName);
+    for (const [, state] of this.groups) {
+      if (
+        state.container.type !== 'idle' &&
+        state.container.process &&
+        !state.container.process.killed
+      ) {
+        activeContainers.push(state.container.containerName);
       }
     }
 

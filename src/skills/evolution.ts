@@ -5,9 +5,8 @@
  * proxy — same auth mechanism as container agents.
  */
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import fs from 'fs';
-import path from 'path';
 
+import { loadPrompt } from '../anthropic-client.js';
 import {
   COLD_START_THRESHOLD,
   CREDENTIAL_PROXY_PORT,
@@ -49,10 +48,7 @@ let evolutionRunning = false;
 
 const MAX_VERSIONS_PER_SKILL = 20;
 
-const evolutionPrompt = fs.readFileSync(
-  path.join(process.cwd(), 'container', 'evolution-prompt.md'),
-  'utf-8',
-);
+const evolutionPrompt = loadPrompt('evolution-prompt.md');
 
 function buildSdkEnv(): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...process.env };

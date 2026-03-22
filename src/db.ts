@@ -60,6 +60,7 @@ function createSchema(database: Database.Database): void {
       prompt TEXT NOT NULL,
       schedule_type TEXT NOT NULL,
       schedule_value TEXT NOT NULL,
+      context_mode TEXT DEFAULT 'isolated',
       next_run TEXT,
       last_run TEXT,
       last_result TEXT,
@@ -146,7 +147,7 @@ function createSchema(database: Database.Database): void {
       root_outcome_score REAL
     );
     CREATE INDEX IF NOT EXISTS idx_skill_runs_deadline ON skill_task_runs(evaluation_deadline);
-    CREATE INDEX IF NOT EXISTS idx_skill_runs_rollout ON skill_task_runs(rollout_id);
+    -- rollout_id index is created in the migration section after the column is ensured
     CREATE INDEX IF NOT EXISTS idx_skill_runs_created ON skill_task_runs(created_at);
 
     CREATE TABLE IF NOT EXISTS skill_run_selections (
@@ -260,6 +261,18 @@ function createSchema(database: Database.Database): void {
     const msg = err instanceof Error ? err.message : String(err);
     if (!msg.includes('already exists') && !msg.includes('duplicate column')) {
       logger.warn({ err }, 'Migration warning: is_bot_message column');
+    }
+  }
+
+  // Add requires_trigger column if it doesn't exist (migration for existing DBs)
+  try {
+    database.exec(
+      `ALTER TABLE registered_groups ADD COLUMN requires_trigger INTEGER DEFAULT 1`,
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes('already exists') && !msg.includes('duplicate column')) {
+      logger.warn({ err }, 'Migration warning: requires_trigger column');
     }
   }
 

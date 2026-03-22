@@ -1,19 +1,22 @@
 /**
  * Skill Evolution Agent
  * Periodically reviews interaction data and evolves behavioral skills.
- * Uses a direct Anthropic API call with Sonnet for cost control.
+ * Uses the Claude Agent SDK for API calls, routing through the credential
+ * proxy — same auth mechanism as container agents.
  */
-import Anthropic from '@anthropic-ai/sdk';
+import { query } from '@anthropic-ai/claude-agent-sdk';
 import fs from 'fs';
 import path from 'path';
 
 import {
   COLD_START_THRESHOLD,
+  CREDENTIAL_PROXY_PORT,
   EVOLUTION_COOLDOWN_MS,
   EVOLUTION_EVAL_TRIGGER,
   EVOLUTION_POLL_INTERVAL,
   EVOLUTION_SCORE_THRESHOLD,
 } from '../config.js';
+import { detectAuthMode } from '../credential-proxy.js';
 import {
   getActiveSkills,
   getAllSkillPerformance,
@@ -32,7 +35,6 @@ import {
   runDbTransaction,
   updateSkillStatus,
 } from '../db.js';
-import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
 import { BehavioralSkill } from '../types.js';
 
@@ -52,13 +54,67 @@ const evolutionPrompt = fs.readFileSync(
   'utf-8',
 );
 
-function getAnthropicClient(): Anthropic | null {
-  const secrets = readEnvFile(['ANTHROPIC_API_KEY']);
-  if (!secrets.ANTHROPIC_API_KEY) {
-    logger.warn('No ANTHROPIC_API_KEY found, evolution agent disabled');
-    return null;
+function buildSdkEnv(): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...process.env };
+  env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${CREDENTIAL_PROXY_PORT}`;
+  const authMode = detectAuthMode();
+  if (authMode === 'api-key') {
+    env.ANTHROPIC_API_KEY = 'placeholder';
+  } else {
+    env.CLAUDE_CODE_OAUTH_TOKEN = 'placeholder';
   }
-  return new Anthropic({ apiKey: secrets.ANTHROPIC_API_KEY });
+  return env;
+}
+
+/**
+ * Make a single-turn API call via the Claude Agent SDK.
+ * Uses the credential proxy for auth, same as container agents.
+ */
+async function callClaude(
+  systemPrompt: string,
+  userMessage: string,
+  model: string,
+  timeoutMs = 60000,
+): Promise<string | null> {
+  const env = buildSdkEnv();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    let resultText: string | null = null;
+
+    for await (const message of query({
+      prompt: userMessage,
+      options: {
+        systemPrompt,
+        cwd: process.cwd(),
+        tools: [],
+        model,
+        maxTurns: 1,
+        env,
+        abortController: controller,
+        permissionMode: 'bypassPermissions',
+        allowDangerouslySkipPermissions: true,
+      },
+    })) {
+      if (message.type === 'result' && 'result' in message) {
+        resultText =
+          (message as { result?: string }).result || resultText;
+      }
+    }
+
+    return resultText;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function parseJsonResponse(text: string): unknown {
+  const cleaned = text
+    .replace(/^```json?\s*/m, '')
+    .replace(/```\s*$/m, '')
+    .trim();
+  return JSON.parse(cleaned);
 }
 
 interface EvolutionAction {
@@ -582,9 +638,6 @@ function processRollbacks(): void {
 async function runEvolution(): Promise<void> {
   if (!shouldRunEvolution()) return;
 
-  const client = getAnthropicClient();
-  if (!client) return;
-
   logger.info('Running skill evolution');
 
   // Process candidates and rollbacks first
@@ -595,46 +648,24 @@ async function runEvolution(): Promise<void> {
   const context = buildEvolutionContext();
 
   try {
-    // Fix 7: 30-second timeout on evolution API call
-    const response = await Promise.race([
-      client.messages.create({
-        model: 'claude-sonnet-4-5-20250929',
-        max_tokens: 4000,
-        system: evolutionPrompt,
-        messages: [{ role: 'user', content: context }],
-      }),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('evolution_timeout')), 30000),
-      ),
-    ]);
-
-    // Fix 6: Validate response structure before accessing content[0]
-    if (
-      !response.content ||
-      response.content.length === 0 ||
-      response.content[0].type !== 'text'
-    ) {
-      logger.error(
-        {},
-        'Evolution response missing or non-text content[0], aborting cycle',
-      );
+    const text = await callClaude(
+      evolutionPrompt,
+      context,
+      'claude-sonnet-4-5-20250929',
+    );
+    if (!text) {
+      logger.error({}, 'Evolution returned empty response, aborting cycle');
       return;
     }
 
-    const text = response.content[0].text;
-    const cleaned = text
-      .replace(/^```json?\s*/m, '')
-      .replace(/```\s*$/m, '')
-      .trim();
-    const result = JSON.parse(cleaned) as EvolutionResponse;
+    const result = parseJsonResponse(text) as EvolutionResponse;
 
-    // Fix 6: Validate parsed JSON structure
     if (
       !Array.isArray(result.actions) ||
       !Array.isArray(result.missed_selections)
     ) {
       logger.error(
-        { rawResponse: cleaned.slice(0, 200) },
+        { rawResponse: text.slice(0, 200) },
         'Evolution response failed schema validation (actions/missed_selections must be arrays)',
       );
       return;
@@ -668,7 +699,7 @@ async function runEvolution(): Promise<void> {
       }
     }
 
-    // Fix 10: Log missed selections using skill ID (look up by name)
+    // Log missed selections using skill ID (look up by name)
     for (const missed of result.missed_selections) {
       const skill = getSkillByName(missed.skill_name, null);
       if (!skill) {
@@ -699,19 +730,6 @@ async function runEvolution(): Promise<void> {
       'Evolution cycle complete',
     );
   } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    // Fix 7: Treat timeout and rate-limit as warn (will retry next poll)
-    if (
-      errMsg === 'evolution_timeout' ||
-      (typeof (err as { status?: number }).status === 'number' &&
-        (err as { status: number }).status === 429)
-    ) {
-      logger.warn(
-        { err },
-        'Evolution API call timed out or rate-limited, will retry',
-      );
-      return;
-    }
     logger.error({ err }, 'Evolution agent API call failed');
   }
 }

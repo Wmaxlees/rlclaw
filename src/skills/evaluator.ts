@@ -2,13 +2,15 @@
  * Skill Evaluator
  * Runs a background loop that evaluates closed rollouts (multi-turn windows).
  * Each rollout contains up to ROLLOUT_SIZE consecutive turns, with tool calls
- * extracted from session transcripts. Uses a direct Anthropic API call.
+ * extracted from session transcripts. Uses the Claude Agent SDK for API calls,
+ * routing through the credential proxy — same auth mechanism as container agents.
  */
-import Anthropic from '@anthropic-ai/sdk';
+import { query } from '@anthropic-ai/claude-agent-sdk';
 import fs from 'fs';
 import path from 'path';
 
-import { EVALUATION_POLL_INTERVAL } from '../config.js';
+import { CREDENTIAL_PROXY_PORT, EVALUATION_POLL_INTERVAL } from '../config.js';
+import { detectAuthMode } from '../credential-proxy.js';
 import {
   getActiveSkills,
   getClosedRolloutsNeedingEvaluation,
@@ -19,7 +21,6 @@ import {
   updateRootOutcomeScore,
   updateSkillPerformance,
 } from '../db.js';
-import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
 import { closeStaleRollouts, closeWorkerRollout } from './rollout-manager.js';
 
@@ -35,13 +36,59 @@ const workerEvaluatorPrompt = fs.readFileSync(
   'utf-8',
 );
 
-function getAnthropicClient(): Anthropic | null {
-  const secrets = readEnvFile(['ANTHROPIC_API_KEY']);
-  if (!secrets.ANTHROPIC_API_KEY) {
-    logger.warn('No ANTHROPIC_API_KEY found, evaluator disabled');
-    return null;
+function buildSdkEnv(): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...process.env };
+  env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${CREDENTIAL_PROXY_PORT}`;
+  const authMode = detectAuthMode();
+  if (authMode === 'api-key') {
+    env.ANTHROPIC_API_KEY = 'placeholder';
+  } else {
+    env.CLAUDE_CODE_OAUTH_TOKEN = 'placeholder';
   }
-  return new Anthropic({ apiKey: secrets.ANTHROPIC_API_KEY });
+  return env;
+}
+
+/**
+ * Make a single-turn API call via the Claude Agent SDK.
+ * Uses the credential proxy for auth, same as container agents.
+ */
+async function callClaude(
+  systemPrompt: string,
+  userMessage: string,
+  model: string,
+  timeoutMs = 60000,
+): Promise<string | null> {
+  const env = buildSdkEnv();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    let resultText: string | null = null;
+
+    for await (const message of query({
+      prompt: userMessage,
+      options: {
+        systemPrompt,
+        cwd: process.cwd(),
+        tools: [],
+        model,
+        maxTurns: 1,
+        env,
+        abortController: controller,
+        permissionMode: 'bypassPermissions',
+        allowDangerouslySkipPermissions: true,
+      },
+    })) {
+      if (message.type === 'result' && 'result' in message) {
+        resultText =
+          (message as { result?: string }).result || resultText;
+      }
+    }
+
+    return resultText;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 interface EvaluatorResponse {
@@ -165,8 +212,15 @@ function buildWorkerRolloutMessage(
   return sections.join('\n');
 }
 
+function parseJsonResponse(text: string): unknown {
+  const cleaned = text
+    .replace(/^```json?\s*/m, '')
+    .replace(/```\s*$/m, '')
+    .trim();
+  return JSON.parse(cleaned);
+}
+
 async function evaluateRollout(
-  client: Anthropic,
   rolloutId: string,
   groupFolder: string,
 ): Promise<EvaluatorResponse | null> {
@@ -177,39 +231,18 @@ async function evaluateRollout(
   const userMessage = buildRolloutMessage(runs, allSkills);
 
   try {
-    const response = await Promise.race([
-      client.messages.create({
-        model: 'claude-sonnet-4-5-20250929',
-        max_tokens: 600,
-        system: evaluatorPrompt,
-        messages: [{ role: 'user', content: userMessage }],
-      }),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('evaluator_timeout')), 30000),
-      ),
-    ]);
-
-    // Fix 1: Validate response structure before accessing content[0]
-    if (
-      !response.content ||
-      response.content.length === 0 ||
-      response.content[0].type !== 'text'
-    ) {
-      logger.warn(
-        { rolloutId },
-        'Evaluator response missing or non-text content[0], skipping',
-      );
+    const text = await callClaude(
+      evaluatorPrompt,
+      userMessage,
+      'claude-sonnet-4-5-20250929',
+    );
+    if (!text) {
+      logger.warn({ rolloutId }, 'Evaluator returned empty response');
       return null;
     }
 
-    const text = response.content[0].text;
-    const cleaned = text
-      .replace(/^```json?\s*/m, '')
-      .replace(/```\s*$/m, '')
-      .trim();
-    const result = JSON.parse(cleaned) as EvaluatorResponse;
+    const result = parseJsonResponse(text) as EvaluatorResponse;
 
-    // Fix 2: Validate parsed JSON structure
     if (
       typeof result.overall !== 'number' ||
       result.overall < 0 ||
@@ -219,7 +252,7 @@ async function evaluateRollout(
       typeof result.reasoning !== 'string'
     ) {
       logger.error(
-        { rolloutId, rawResponse: cleaned.slice(0, 200) },
+        { rolloutId, rawResponse: text.slice(0, 200) },
         'Evaluator response failed schema validation',
       );
       return null;
@@ -227,26 +260,12 @@ async function evaluateRollout(
 
     return result;
   } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    // Fix 3: Treat timeout and rate-limit as warn (will retry next poll)
-    if (
-      errMsg === 'evaluator_timeout' ||
-      (typeof (err as { status?: number }).status === 'number' &&
-        (err as { status: number }).status === 429)
-    ) {
-      logger.warn(
-        { err, rolloutId },
-        'Evaluator API call timed out or rate-limited, will retry',
-      );
-      return null;
-    }
     logger.error({ err, rolloutId }, 'Evaluator API call failed');
     return null;
   }
 }
 
 async function evaluateWorkerRolloutTree(
-  client: Anthropic,
   rolloutId: string,
   groupFolder: string,
 ): Promise<WorkerEvaluatorResponse | null> {
@@ -256,36 +275,17 @@ async function evaluateWorkerRolloutTree(
   const userMessage = buildWorkerRolloutMessage(runs);
 
   try {
-    const response = await Promise.race([
-      client.messages.create({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 600,
-        system: workerEvaluatorPrompt,
-        messages: [{ role: 'user', content: userMessage }],
-      }),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('evaluator_timeout')), 30000),
-      ),
-    ]);
-
-    if (
-      !response.content ||
-      response.content.length === 0 ||
-      response.content[0].type !== 'text'
-    ) {
-      logger.warn(
-        { rolloutId },
-        'Worker evaluator response missing or non-text content[0], skipping',
-      );
+    const text = await callClaude(
+      workerEvaluatorPrompt,
+      userMessage,
+      'claude-haiku-4-5-20251001',
+    );
+    if (!text) {
+      logger.warn({ rolloutId }, 'Worker evaluator returned empty response');
       return null;
     }
 
-    const text = response.content[0].text;
-    const cleaned = text
-      .replace(/^```json?\s*/m, '')
-      .replace(/```\s*$/m, '')
-      .trim();
-    const result = JSON.parse(cleaned) as WorkerEvaluatorResponse;
+    const result = parseJsonResponse(text) as WorkerEvaluatorResponse;
 
     if (
       typeof result.overall !== 'number' ||
@@ -296,7 +296,7 @@ async function evaluateWorkerRolloutTree(
       typeof result.reasoning !== 'string'
     ) {
       logger.error(
-        { rolloutId, rawResponse: cleaned.slice(0, 200) },
+        { rolloutId, rawResponse: text.slice(0, 200) },
         'Worker evaluator response failed schema validation',
       );
       return null;
@@ -304,18 +304,6 @@ async function evaluateWorkerRolloutTree(
 
     return result;
   } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    if (
-      errMsg === 'evaluator_timeout' ||
-      (typeof (err as { status?: number }).status === 'number' &&
-        (err as { status: number }).status === 429)
-    ) {
-      logger.warn(
-        { err, rolloutId },
-        'Worker evaluator API call timed out or rate-limited, will retry',
-      );
-      return null;
-    }
     logger.error({ err, rolloutId }, 'Worker evaluator API call failed');
     return null;
   }
@@ -330,13 +318,9 @@ export async function scoreAndCloseWorkerRollout(
   taskDescription: string,
   synthesisText: string,
 ): Promise<void> {
-  const client = getAnthropicClient();
-  if (!client) return;
-
   // Close rollout first so it's ready for evaluation
   closeWorkerRollout(rootTaskId);
 
-  // Score the synthesis: simple prompt asking how good the output was
   const scoringMessage = [
     '## Task Description',
     '```',
@@ -358,40 +342,25 @@ Return ONLY a JSON object with a single field: {"overall": 0.0-1.0}
 - 0.0-0.3: Failed — does not address the task`;
 
   try {
-    const response = await Promise.race([
-      client.messages.create({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 100,
-        system: scoringSystem,
-        messages: [{ role: 'user', content: scoringMessage }],
-      }),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('synthesis_score_timeout')), 20000),
-      ),
-    ]);
+    const text = await callClaude(
+      scoringSystem,
+      scoringMessage,
+      'claude-haiku-4-5-20251001',
+      20000,
+    );
+    if (!text) return;
 
+    const parsed = parseJsonResponse(text) as { overall: number };
     if (
-      response.content &&
-      response.content.length > 0 &&
-      response.content[0].type === 'text'
+      typeof parsed.overall === 'number' &&
+      parsed.overall >= 0 &&
+      parsed.overall <= 1
     ) {
-      const text = response.content[0].text;
-      const cleaned = text
-        .replace(/^```json?\s*/m, '')
-        .replace(/```\s*$/m, '')
-        .trim();
-      const parsed = JSON.parse(cleaned) as { overall: number };
-      if (
-        typeof parsed.overall === 'number' &&
-        parsed.overall >= 0 &&
-        parsed.overall <= 1
-      ) {
-        updateRootOutcomeScore(rootTaskId, parsed.overall);
-        logger.info(
-          { rootTaskId, score: parsed.overall },
-          'Root outcome score recorded',
-        );
-      }
+      updateRootOutcomeScore(rootTaskId, parsed.overall);
+      logger.info(
+        { rootTaskId, score: parsed.overall },
+        'Root outcome score recorded',
+      );
     }
   } catch (err) {
     logger.warn(
@@ -405,9 +374,6 @@ async function processEvaluations(): Promise<void> {
   // Close any stale open rollouts first
   closeStaleRollouts();
 
-  const client = getAnthropicClient();
-  if (!client) return;
-
   const rollouts = getClosedRolloutsNeedingEvaluation();
   if (rollouts.length === 0) return;
 
@@ -418,11 +384,7 @@ async function processEvaluations(): Promise<void> {
 
   for (const rollout of rollouts) {
     try {
-      const result = await evaluateRollout(
-        client,
-        rollout.id,
-        rollout.group_folder,
-      );
+      const result = await evaluateRollout(rollout.id, rollout.group_folder);
       if (!result) continue;
 
       const runs = getRunsForRollout(rollout.id);
@@ -477,7 +439,6 @@ async function processEvaluations(): Promise<void> {
   for (const rollout of workerRollouts) {
     try {
       const result = await evaluateWorkerRolloutTree(
-        client,
         rollout.id,
         rollout.group_folder,
       );

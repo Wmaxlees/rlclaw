@@ -56,7 +56,9 @@ const evolutionPrompt = fs.readFileSync(
 
 function buildSdkEnv(): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...process.env };
-  env.ANTHROPIC_BASE_URL = process.env.ANTHROPIC_BASE_URL ?? `http://127.0.0.1:${CREDENTIAL_PROXY_PORT}`;
+  env.ANTHROPIC_BASE_URL =
+    process.env.ANTHROPIC_BASE_URL ??
+    `http://127.0.0.1:${CREDENTIAL_PROXY_PORT}`;
   const authMode = detectAuthMode();
   if (authMode === 'api-key') {
     env.ANTHROPIC_API_KEY = 'placeholder';

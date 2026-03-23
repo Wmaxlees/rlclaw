@@ -1236,9 +1236,9 @@ export function createWorkerRollout(
   groupFolder: string,
 ): Rollout {
   const id = `worker-${rootTaskId}`;
-  const existing = db
-    .prepare(`SELECT * FROM rollouts WHERE id = ?`)
-    .get(id) as Rollout | undefined;
+  const existing = db.prepare(`SELECT * FROM rollouts WHERE id = ?`).get(id) as
+    | Rollout
+    | undefined;
   if (existing) return existing;
 
   const now = new Date().toISOString();
@@ -1284,7 +1284,9 @@ export function recordWorkerTaskRun(task: WorkerTask): void {
     task.chat_jid,
     rolloutId,
     task.description.slice(0, 500),
-    task.result ? task.result.slice(0, 500) : (task.error?.slice(0, 200) ?? null),
+    task.result
+      ? task.result.slice(0, 500)
+      : (task.error?.slice(0, 200) ?? null),
     null,
     durationMs,
     task.status === 'done' ? 'success' : 'failed',

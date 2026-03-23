@@ -80,8 +80,7 @@ async function callClaude(
       },
     })) {
       if (message.type === 'result' && 'result' in message) {
-        resultText =
-          (message as { result?: string }).result || resultText;
+        resultText = (message as { result?: string }).result || resultText;
       }
     }
 

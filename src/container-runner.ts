@@ -161,6 +161,10 @@ function buildVolumeMounts(
       fs.cpSync(srcDir, dstDir, { recursive: true });
     }
   }
+
+  // Deploy behavioral skills from DB as native SKILL.md files alongside built-ins
+  deploySkillFiles(group.folder, skillsDst);
+
   mounts.push({
     hostPath: groupSessionsDir,
     containerPath: '/home/node/.claude',
@@ -214,14 +218,6 @@ function buildVolumeMounts(
     mounts.push(...validatedMounts);
   }
 
-  // Deploy behavioral skills from DB and mount read-only
-  const skillsDeployDir = deploySkillFiles(group.folder);
-  mounts.push({
-    hostPath: skillsDeployDir,
-    containerPath: '/workspace/behavioral-skills',
-    readonly: true,
-  });
-
   return mounts;
 }
 
@@ -249,6 +245,11 @@ function buildContainerArgs(
     args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
   } else {
     args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
+  }
+
+  // Pass model override if configured
+  if (process.env.NANOCLAW_MODEL) {
+    args.push('-e', `NANOCLAW_MODEL=${process.env.NANOCLAW_MODEL}`);
   }
 
   // Runtime-specific args for host gateway resolution

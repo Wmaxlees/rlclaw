@@ -73,17 +73,13 @@ export const TIMEZONE =
   process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 // --- Behavioral skills ---
-export const BEHAVIORAL_SKILLS_DIR = path.resolve(
-  DATA_DIR,
-  'behavioral-skills',
-);
-export const EVALUATION_DELAY_MS = 30 * 60 * 1000; // 30 minutes
-export const EVALUATION_POLL_INTERVAL = 5 * 60 * 1000; // 5 minutes
-export const EVOLUTION_POLL_INTERVAL = 60 * 60 * 1000; // 1 hour
-export const COLD_START_THRESHOLD = 15; // Interactions before first evolution
-export const EVOLUTION_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours
-export const EVOLUTION_EVAL_TRIGGER = 10; // New evaluations before evolution triggers
-export const EVOLUTION_SCORE_THRESHOLD = 0.6; // Score below which evolution triggers
+export const EVALUATION_DELAY_MS = parseInt(process.env.EVALUATION_DELAY_MS ?? String(30 * 60 * 1000), 10); // 30 minutes
+export const EVALUATION_POLL_INTERVAL = parseInt(process.env.EVALUATION_POLL_INTERVAL ?? String(5 * 60 * 1000), 10); // 5 minutes
+export const EVOLUTION_POLL_INTERVAL = parseInt(process.env.EVOLUTION_POLL_INTERVAL ?? String(60 * 60 * 1000), 10); // 1 hour
+export const COLD_START_THRESHOLD = parseInt(process.env.COLD_START_THRESHOLD ?? '15', 10); // Interactions before first evolution
+export const EVOLUTION_COOLDOWN_MS = parseInt(process.env.EVOLUTION_COOLDOWN_MS ?? String(24 * 60 * 60 * 1000), 10); // 24 hours
+export const EVOLUTION_EVAL_TRIGGER = parseInt(process.env.EVOLUTION_EVAL_TRIGGER ?? '10', 10); // New evaluations before evolution triggers
+export const EVOLUTION_SCORE_THRESHOLD = parseFloat(process.env.EVOLUTION_SCORE_THRESHOLD ?? '0.6'); // Score below which evolution triggers
 
 // --- Rollouts ---
 export const ROLLOUT_SIZE = 6; // Number of turns per evaluation rollout

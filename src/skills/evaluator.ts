@@ -38,9 +38,7 @@ const workerEvaluatorPrompt = fs.readFileSync(
 
 function buildSdkEnv(): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...process.env };
-  env.ANTHROPIC_BASE_URL =
-    process.env.ANTHROPIC_BASE_URL ??
-    `http://127.0.0.1:${CREDENTIAL_PROXY_PORT}`;
+  env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${CREDENTIAL_PROXY_PORT}`;
   const authMode = detectAuthMode();
   if (authMode === 'api-key') {
     env.ANTHROPIC_API_KEY = 'placeholder';
@@ -58,7 +56,7 @@ async function callClaude(
   systemPrompt: string,
   userMessage: string,
   model: string,
-  timeoutMs = 60000,
+  timeoutMs = 120000,
 ): Promise<string | null> {
   const env = buildSdkEnv();
   const controller = new AbortController();
@@ -82,7 +80,8 @@ async function callClaude(
       },
     })) {
       if (message.type === 'result' && 'result' in message) {
-        resultText = (message as { result?: string }).result || resultText;
+        resultText =
+          (message as { result?: string }).result || resultText;
       }
     }
 
@@ -214,10 +213,21 @@ function buildWorkerRolloutMessage(
 }
 
 function parseJsonResponse(text: string): unknown {
-  const cleaned = text
+  // Strip markdown fencing
+  let cleaned = text
     .replace(/^```json?\s*/m, '')
     .replace(/```\s*$/m, '')
     .trim();
+
+  // If the response starts with prose (common with smaller models),
+  // extract the first JSON object from anywhere in the text
+  if (!cleaned.startsWith('{') && !cleaned.startsWith('[')) {
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      cleaned = jsonMatch[0];
+    }
+  }
+
   return JSON.parse(cleaned);
 }
 
@@ -235,7 +245,7 @@ async function evaluateRollout(
     const text = await callClaude(
       evaluatorPrompt,
       userMessage,
-      'claude-sonnet-4-5-20250929',
+      'claude-haiku-4-5-20251001',
     );
     if (!text) {
       logger.warn({ rolloutId }, 'Evaluator returned empty response');

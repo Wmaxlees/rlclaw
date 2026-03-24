@@ -49,12 +49,11 @@ When you learn something important:
 
 ## Behavioral Skills
 
-Before responding to a task, check `/workspace/behavioral-skills/` for relevant
-behavioral guidelines. Read and follow any that apply to your current task.
-Select up to 5 skills. After selecting, call the `report_skills_used` tool
-with the names of the skills you chose.
+IMPORTANT: Before starting any task, review the behavioral skills listed in your system prompt. If any skill's description is even partially relevant to your current task, you MUST invoke it via `/skill-name` to load the full guidelines, then follow them.
 
-If no skills are relevant, proceed without them.
+After loading skills, call the `report_skills_used` tool with the names of the skills you used. Select up to 5 skills per task.
+
+Only skip this step if no skills are relevant at all.
 
 ## Message Formatting
 

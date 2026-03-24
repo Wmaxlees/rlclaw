@@ -373,6 +373,37 @@ async function runQuery(
     globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
   }
 
+  // Force-inject behavioral skills into the system prompt so the agent
+  // always sees them without needing to invoke /skill-name first.
+  const behavioralManifestPath = path.join(
+    process.env.HOME || '/home/node',
+    '.claude', 'skills', '_behavioral-manifest.json',
+  );
+  if (fs.existsSync(behavioralManifestPath)) {
+    try {
+      const skillNames: string[] = JSON.parse(fs.readFileSync(behavioralManifestPath, 'utf-8'));
+      const skillSections: string[] = [];
+      for (const name of skillNames) {
+        const skillPath = path.join(
+          path.dirname(behavioralManifestPath), name, 'SKILL.md',
+        );
+        if (fs.existsSync(skillPath)) {
+          const raw = fs.readFileSync(skillPath, 'utf-8');
+          // Strip YAML frontmatter — content is being injected directly
+          const content = raw.replace(/^---[\s\S]*?---\s*/, '').trim();
+          if (content) skillSections.push(content);
+        }
+      }
+      if (skillSections.length > 0) {
+        const injected = `\n\n## Behavioral Skills — Follow These Guidelines\n\n${skillSections.join('\n\n---\n\n')}`;
+        globalClaudeMd = (globalClaudeMd || '') + injected;
+        log(`Injected ${skillSections.length} behavioral skill(s) into system prompt`);
+      }
+    } catch (err) {
+      log(`Failed to load behavioral skills: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   // Discover additional directories mounted at /workspace/extra/*
   // These are passed to the SDK so their CLAUDE.md files are loaded automatically
   const extraDirs: string[] = [];
@@ -389,10 +420,15 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
+  // Model is configurable via NANOCLAW_MODEL env var (passed through from host .env)
+  const model = process.env.NANOCLAW_MODEL || undefined;
+  if (model) log(`Using model: ${model}`);
+
   for await (const message of query({
     prompt: stream,
     options: {
       cwd: '/workspace/group',
+      model,
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
       resumeSessionAt: resumeAt,

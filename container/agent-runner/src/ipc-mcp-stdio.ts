@@ -439,9 +439,9 @@ const SKILLS_DIR = path.join(IPC_DIR, 'skills');
 
 server.tool(
   'report_skills_used',
-  'Report which behavioral skills you selected for this interaction. Call this after reading relevant skills from /workspace/behavioral-skills/.',
+  'Report which behavioral skills you selected for this interaction. Call this after invoking relevant behavioral skills via /skill-name.',
   {
-    skills: z.array(z.string()).describe('Names of skills used (filename without .md)'),
+    skills: z.array(z.string()).describe('Names of behavioral skills used'),
   },
   async (args) => {
     writeIpcFile(SKILLS_DIR, {

@@ -56,9 +56,7 @@ const evolutionPrompt = fs.readFileSync(
 
 function buildSdkEnv(): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...process.env };
-  env.ANTHROPIC_BASE_URL =
-    process.env.ANTHROPIC_BASE_URL ??
-    `http://127.0.0.1:${CREDENTIAL_PROXY_PORT}`;
+  env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${CREDENTIAL_PROXY_PORT}`;
   const authMode = detectAuthMode();
   if (authMode === 'api-key') {
     env.ANTHROPIC_API_KEY = 'placeholder';
@@ -76,7 +74,7 @@ async function callClaude(
   systemPrompt: string,
   userMessage: string,
   model: string,
-  timeoutMs = 60000,
+  timeoutMs = 120000,
 ): Promise<string | null> {
   const env = buildSdkEnv();
   const controller = new AbortController();
@@ -100,7 +98,8 @@ async function callClaude(
       },
     })) {
       if (message.type === 'result' && 'result' in message) {
-        resultText = (message as { result?: string }).result || resultText;
+        resultText =
+          (message as { result?: string }).result || resultText;
       }
     }
 
@@ -111,10 +110,21 @@ async function callClaude(
 }
 
 function parseJsonResponse(text: string): unknown {
-  const cleaned = text
+  // Strip markdown fencing
+  let cleaned = text
     .replace(/^```json?\s*/m, '')
     .replace(/```\s*$/m, '')
     .trim();
+
+  // If the response starts with prose (common with smaller models),
+  // extract the first JSON object from anywhere in the text
+  if (!cleaned.startsWith('{') && !cleaned.startsWith('[')) {
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      cleaned = jsonMatch[0];
+    }
+  }
+
   return JSON.parse(cleaned);
 }
 
@@ -649,17 +659,36 @@ async function runEvolution(): Promise<void> {
   const context = buildEvolutionContext();
 
   try {
-    const text = await callClaude(
+    let text = await callClaude(
       evolutionPrompt,
       context,
-      'claude-sonnet-4-5-20250929',
+      'claude-haiku-4-5-20251001',
     );
     if (!text) {
       logger.error({}, 'Evolution returned empty response, aborting cycle');
       return;
     }
 
-    const result = parseJsonResponse(text) as EvolutionResponse;
+    logger.debug({ rawResponse: text.slice(0, 500) }, 'Evolution raw response');
+
+    // If the response doesn't contain valid JSON, retry with a forceful prompt
+    let result: EvolutionResponse;
+    try {
+      result = parseJsonResponse(text) as EvolutionResponse;
+    } catch {
+      logger.warn('Evolution response was not valid JSON, retrying with correction prompt');
+      const retryText = await callClaude(
+        'You must respond with ONLY a valid JSON object. No prose, no explanation, no markdown. Just the JSON.',
+        `Your previous response was not valid JSON. Here is the required format:\n\n{"actions": [{"type": "create", "skill_name": "example", "content": "# Example\\n\\nGuidelines...", "description": "Short description", "reasoning": "Evidence-based reason"}], "missed_selections": [], "summary": "Brief summary"}\n\nThe original context was:\n${context.slice(0, 3000)}\n\nRespond with ONLY the JSON object:`,
+        'claude-haiku-4-5-20251001',
+      );
+      if (!retryText) {
+        logger.error({}, 'Evolution retry returned empty response');
+        return;
+      }
+      logger.debug({ rawRetry: retryText.slice(0, 500) }, 'Evolution retry response');
+      result = parseJsonResponse(retryText) as EvolutionResponse;
+    }
 
     if (
       !Array.isArray(result.actions) ||
